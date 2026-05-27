@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">chaserpa</string>
+    <string name="accessibility_service_description">自动读取企业微信外部群消息并推送到后台</string>
+</resources>
