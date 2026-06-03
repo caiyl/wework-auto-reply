@@ -24,11 +24,8 @@ class MessageCollector(
     private val transitionRunnable = Runnable {
         if (currentState == State.TRANSITION) {
             currentState = if (foregroundDetector.isForeground()) State.FOREGROUND else State.BACKGROUND
-            MessageLog.add("[STATE] Current state: $currentState")
-            when (config.monitorMode) {
-                ConfigRepository.MonitorMode.HYBRID -> handleHybridState()
-                ConfigRepository.MonitorMode.POLLING_ONLY -> handlePollingOnlyState()
-            }
+            MessageLog.add("[STATE] Transition resolved to: $currentState")
+            applyCollectorsForCurrentState()
         }
     }
 
@@ -49,17 +46,21 @@ class MessageCollector(
         val wasForeground = currentState == State.FOREGROUND
         val isForeground = foregroundDetector.isForeground()
 
+        // State transition detection
         when {
             currentState == State.TRANSITION -> {
                 if (System.currentTimeMillis() >= transitionEndTime) {
                     currentState = if (isForeground) State.FOREGROUND else State.BACKGROUND
-                    MessageLog.add("[STATE] Current state: $currentState")
+                    MessageLog.add("[STATE] Transition resolved to: $currentState")
+                    applyCollectorsForCurrentState()
                 }
+                return // Skip further event handling during transition
             }
             wasForeground && !isForeground -> enterTransition()
             !wasForeground && isForeground -> enterTransition()
         }
 
+        // Mode-specific event handling
         when (config.monitorMode) {
             ConfigRepository.MonitorMode.HYBRID -> handleHybrid(event)
             ConfigRepository.MonitorMode.POLLING_ONLY -> handlePollingOnly(event)
@@ -94,13 +95,19 @@ class MessageCollector(
         if (!uiPollingCollector.isRunning()) uiPollingCollector.start()
     }
 
+    private fun applyCollectorsForCurrentState() {
+        when (config.monitorMode) {
+            ConfigRepository.MonitorMode.HYBRID -> handleHybridState()
+            ConfigRepository.MonitorMode.POLLING_ONLY -> handlePollingOnlyState()
+        }
+    }
+
     private fun enterTransition() {
         currentState = State.TRANSITION
         transitionEndTime = System.currentTimeMillis() + TRANSITION_MS
         handler.removeCallbacks(transitionRunnable)
         handler.postDelayed(transitionRunnable, TRANSITION_MS)
         MessageLog.add("[STATE] Entering TRANSITION state (${TRANSITION_MS}ms)")
-        MessageLog.add("[STATE] Current state: $currentState")
     }
 
     fun destroy() {
