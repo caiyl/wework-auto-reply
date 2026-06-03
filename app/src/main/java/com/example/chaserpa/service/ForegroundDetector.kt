@@ -17,9 +17,7 @@ class ForegroundDetector {
                 isForeground = (pkg == PACKAGE_WEWORK)
             }
             AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED -> {
-                if (pkg == PACKAGE_WEWORK) {
-                    isForeground = true
-                }
+                isForeground = (pkg == PACKAGE_WEWORK)
             }
         }
     }
