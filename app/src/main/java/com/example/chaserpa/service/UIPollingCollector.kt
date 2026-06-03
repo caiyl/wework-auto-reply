@@ -172,6 +172,8 @@ class UIPollingCollector(
                         current = parent
                         depth++
                     }
+                    // Remove groupItemNode from nodesToRecycle so it survives past finally
+                    groupItemNode?.let { nodesToRecycle.remove(it) }
                     break
                 }
             }
@@ -243,19 +245,23 @@ class UIPollingCollector(
     }
 
     private fun isNodeInRecyclerView(node: AccessibilityNodeInfo): Boolean {
+        val parentsToRecycle = mutableListOf<AccessibilityNodeInfo>()
         var current: AccessibilityNodeInfo? = node
         var depth = 0
+        var found = false
         while (current != null && depth < 10) {
-            val parent = current.parent
-            if (parent?.className?.toString()?.contains("RecyclerView") == true ||
-                parent?.className?.toString()?.contains("ListView") == true) {
-                parent.recycle()
-                return true
+            val parent = current.parent ?: break
+            parentsToRecycle.add(parent)
+            val parentClass = parent.className?.toString() ?: ""
+            if (parentClass.contains("RecyclerView") || parentClass.contains("ListView")) {
+                found = true
+                break
             }
             current = parent
             depth++
         }
-        return false
+        parentsToRecycle.forEach { it.recycle() }
+        return found
     }
 
     private fun findInputField(root: AccessibilityNodeInfo): AccessibilityNodeInfo? {
@@ -275,19 +281,26 @@ class UIPollingCollector(
         val minTop = (rootRect.top + rootRect.height() * 0.7).toInt()
         val nodeRect = android.graphics.Rect()
         val deque = java.util.ArrayDeque<AccessibilityNodeInfo>()
+        val nodesToRecycle = mutableListOf<AccessibilityNodeInfo>()
         deque.add(root)
         while (deque.isNotEmpty()) {
             val node = deque.poll() ?: continue
             if (node.className?.toString() == "android.widget.EditText") {
                 node.getBoundsInScreen(nodeRect)
                 if (nodeRect.top >= minTop) {
+                    nodesToRecycle.forEach { it.recycle() }
                     return node
                 }
             }
             for (i in 0 until node.childCount) {
-                node.getChild(i)?.let { deque.add(it) }
+                val child = node.getChild(i)
+                if (child != null) {
+                    nodesToRecycle.add(child)
+                    deque.add(child)
+                }
             }
         }
+        nodesToRecycle.forEach { it.recycle() }
         return null
     }
 
@@ -297,6 +310,7 @@ class UIPollingCollector(
     ): List<MessagePusher.WeWorkMessage> {
         val messages = mutableListOf<MessagePusher.WeWorkMessage>()
         val deque = java.util.ArrayDeque<AccessibilityNodeInfo>()
+        val nodesToRecycle = mutableListOf<AccessibilityNodeInfo>()
         deque.add(root)
         val inputHints = setOf("发消息", "添加消息内容", "输入消息", "请输入消息")
         while (deque.isNotEmpty()) {
@@ -321,9 +335,14 @@ class UIPollingCollector(
                 }
             }
             for (i in 0 until node.childCount) {
-                node.getChild(i)?.let { deque.add(it) }
+                val child = node.getChild(i)
+                if (child != null) {
+                    nodesToRecycle.add(child)
+                    deque.add(child)
+                }
             }
         }
+        nodesToRecycle.forEach { it.recycle() }
         return messages
     }
 
