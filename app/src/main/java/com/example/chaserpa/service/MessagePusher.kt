@@ -12,6 +12,7 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
 import org.json.JSONObject
 import java.io.IOException
+import java.util.Collections
 import java.util.concurrent.TimeUnit
 
 class MessagePusher(
@@ -31,7 +32,7 @@ class MessagePusher(
         .readTimeout(10, TimeUnit.SECONDS)
         .build()
 
-    private val pendingQueue = ArrayDeque<WeWorkMessage>()
+    private val pendingQueue = Collections.synchronizedList(ArrayDeque<WeWorkMessage>())
     private val handler = Handler(Looper.getMainLooper())
 
     data class WeWorkMessage(
@@ -112,17 +113,22 @@ class MessagePusher(
     }
 
     private fun enqueuePending(message: WeWorkMessage) {
-        if (pendingQueue.size >= MAX_QUEUE_SIZE) {
-            pendingQueue.removeFirst()
+        synchronized(pendingQueue) {
+            if (pendingQueue.size >= MAX_QUEUE_SIZE) {
+                pendingQueue.removeFirst()
+            }
+            pendingQueue.addLast(message)
         }
-        pendingQueue.addLast(message)
         MessageLog.add("[PUSH_QUEUE] Message queued for retry (${pendingQueue.size})")
     }
 
     private fun flushPending() {
-        if (pendingQueue.isEmpty()) return
-        val copy = pendingQueue.toList()
-        pendingQueue.clear()
+        val copy: List<WeWorkMessage>
+        synchronized(pendingQueue) {
+            if (pendingQueue.isEmpty()) return
+            copy = pendingQueue.toList()
+            pendingQueue.clear()
+        }
         copy.forEach { doPush(it) }
     }
 }
