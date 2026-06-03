@@ -69,22 +69,27 @@ class MessagePusher(
             }
 
             override fun onResponse(call: Call, response: Response) {
-                if (response.isSuccessful) {
-                    val body = response.body?.string()
-                    if (body != null && onReply != null) {
-                        try {
-                            val json = org.json.JSONObject(body)
-                            val reply = json.optString("reply", "")
-                            if (reply.isNotEmpty()) {
-                                onReply(message.groupName, reply)
+                try {
+                    if (response.isSuccessful) {
+                        val body = response.body?.string()
+                        if (body != null && onReply != null) {
+                            try {
+                                val json = org.json.JSONObject(body)
+                                val reply = json.optString("reply", "")
+                                if (reply.isNotEmpty()) {
+                                    onReply(message.groupName, reply)
+                                }
+                            } catch (e: Exception) {
+                                Log.w(TAG, "Failed to parse reply JSON", e)
                             }
-                        } catch (_: Exception) {}
+                        }
+                        Log.i(TAG, "Message pushed successfully: ${message.groupName} / ${message.sender}")
+                    } else {
+                        Log.e(TAG, "Push failed with code: ${response.code}")
                     }
-                    Log.i(TAG, "Message pushed successfully: ${message.groupName} / ${message.sender}")
-                } else {
-                    Log.e(TAG, "Push failed with code: ${response.code}")
+                } finally {
+                    response.close()
                 }
-                response.close()
             }
         })
     }

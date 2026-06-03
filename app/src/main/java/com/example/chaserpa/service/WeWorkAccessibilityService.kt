@@ -85,5 +85,8 @@ class WeWorkAccessibilityService : AccessibilityService() {
         if (::autoReplyOrchestrator.isInitialized) {
             autoReplyOrchestrator.clear()
         }
+        if (::deduplicator.isInitialized) {
+            deduplicator.clear()
+        }
     }
 }
