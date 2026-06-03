@@ -38,8 +38,9 @@ class WeWorkAccessibilityService : AccessibilityService() {
         uiAutomator = WeWorkUIAutomator(this)
         val myNickname = configRepository.myNickname
         messageCollector = MessageCollector(
-            targetGroups = groups
-        ) { message ->
+            service = this,
+            config = configRepository,
+            onMessageCollected = { message ->
             if (!deduplicator.isDuplicate(message.groupName, message.sender, message.content)) {
                 messagePusher.push(message)
                 if (configRepository.autoReply) {
@@ -52,7 +53,7 @@ class WeWorkAccessibilityService : AccessibilityService() {
                 Log.d(TAG, "Duplicate message ignored: ${message.content}")
                 MessageLog.add("[SYS] 重复消息已忽略")
             }
-        }
+        })
         MessageLog.add("[SYS] MessageCollector 初始化完成")
     }
 
