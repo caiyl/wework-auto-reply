@@ -1,5 +1,7 @@
 package com.example.chaserpa.service
 
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
 import okhttp3.Call
 import okhttp3.Callback
@@ -19,6 +21,7 @@ class MessagePusher(
 ) {
     companion object {
         private const val TAG = "MessagePusher"
+        private const val MAX_QUEUE_SIZE = 100
         private val JSON = "application/json; charset=utf-8".toMediaType()
     }
 
@@ -27,6 +30,9 @@ class MessagePusher(
         .writeTimeout(10, TimeUnit.SECONDS)
         .readTimeout(10, TimeUnit.SECONDS)
         .build()
+
+    private val pendingQueue = ArrayDeque<WeWorkMessage>()
+    private val handler = Handler(Looper.getMainLooper())
 
     data class WeWorkMessage(
         val groupName: String,
@@ -48,7 +54,11 @@ class MessagePusher(
             return
         }
         MessageLog.add("[PUSH] $logLine")
+        flushPending()
+        doPush(message)
+    }
 
+    private fun doPush(message: WeWorkMessage, retryCount: Int = 0) {
         val json = JSONObject().apply {
             put("groupName", message.groupName)
             put("sender", message.sender)
@@ -65,7 +75,13 @@ class MessagePusher(
 
         client.newCall(request).enqueue(object : Callback {
             override fun onFailure(call: Call, e: IOException) {
-                Log.e(TAG, "Failed to push message: ${e.message}")
+                Log.e(TAG, "Push failed: ${e.message}, retry=$retryCount")
+                MessageLog.add("[PUSH_FAIL] ${message.groupName}, retry=$retryCount")
+                if (retryCount < 2) {
+                    handler.postDelayed({ doPush(message, retryCount + 1) }, 3000L * (retryCount + 1))
+                } else {
+                    enqueuePending(message)
+                }
             }
 
             override fun onResponse(call: Call, response: Response) {
@@ -86,11 +102,27 @@ class MessagePusher(
                         Log.i(TAG, "Message pushed successfully: ${message.groupName} / ${message.sender}")
                     } else {
                         Log.e(TAG, "Push failed with code: ${response.code}")
+                        enqueuePending(message)
                     }
                 } finally {
                     response.close()
                 }
             }
         })
+    }
+
+    private fun enqueuePending(message: WeWorkMessage) {
+        if (pendingQueue.size >= MAX_QUEUE_SIZE) {
+            pendingQueue.removeFirst()
+        }
+        pendingQueue.addLast(message)
+        MessageLog.add("[PUSH_QUEUE] Message queued for retry (${pendingQueue.size})")
+    }
+
+    private fun flushPending() {
+        if (pendingQueue.isEmpty()) return
+        val copy = pendingQueue.toList()
+        pendingQueue.clear()
+        copy.forEach { doPush(it) }
     }
 }
