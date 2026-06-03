@@ -16,6 +16,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
@@ -152,19 +153,12 @@ fun ConfigScreen() {
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                Button(
-                    onClick = { monitorMode = ConfigRepository.MonitorMode.HYBRID },
-                    modifier = Modifier.weight(1f),
-                    enabled = monitorMode != ConfigRepository.MonitorMode.HYBRID
-                ) {
-                    Text("🔄 混合")
-                }
-                Button(
-                    onClick = { monitorMode = ConfigRepository.MonitorMode.POLLING_ONLY },
-                    modifier = Modifier.weight(1f),
-                    enabled = monitorMode != ConfigRepository.MonitorMode.POLLING_ONLY
-                ) {
-                    Text("🔍 纯轮询")
+                if (monitorMode == ConfigRepository.MonitorMode.HYBRID) {
+                    Button(onClick = {}, modifier = Modifier.weight(1f)) { Text("混合模式") }
+                    OutlinedButton(onClick = { monitorMode = ConfigRepository.MonitorMode.POLLING_ONLY }, modifier = Modifier.weight(1f)) { Text("纯轮询模式") }
+                } else {
+                    OutlinedButton(onClick = { monitorMode = ConfigRepository.MonitorMode.HYBRID }, modifier = Modifier.weight(1f)) { Text("混合模式") }
+                    Button(onClick = {}, modifier = Modifier.weight(1f)) { Text("纯轮询模式") }
                 }
             }
 
@@ -182,7 +176,7 @@ fun ConfigScreen() {
             Spacer(modifier = Modifier.height(12.dp))
 
             Text(
-                text = "轮询间隔：%.1f 秒".format(pollInterval / 1000f),
+                text = "轮询间隔: ${pollInterval / 1000} 秒",
                 style = MaterialTheme.typography.bodyLarge
             )
 
