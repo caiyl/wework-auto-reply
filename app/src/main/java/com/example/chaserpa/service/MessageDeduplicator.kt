@@ -2,17 +2,25 @@ package com.example.chaserpa.service
 
 import java.util.LinkedHashMap
 
-class MessageDeduplicator(private val maxSize: Int = 100, private val windowMs: Long = 60000) {
+class MessageDeduplicator(private val maxSize: Int = 100, private val windowMs: Long = MS_PER_MINUTE) {
+
+    companion object {
+        private const val MS_PER_MINUTE = 60_000L
+    }
+
+    init {
+        require(maxSize > 0) { "maxSize must be > 0" }
+    }
 
     private val cache = LinkedHashMap<String, Long>(maxSize, 0.75f, true)
 
     /**
-     * 检查该消息是否已存在（去重）。
-     * 如果不存在或已过期，则加入缓存并返回 false（表示不重复）。
-     * 如果存在且未过期，返回 true（表示重复）。
+     * Checks whether this message already exists (deduplication).
+     * If it does not exist or has expired, it is added to the cache and false is returned (not a duplicate).
+     * If it exists and has not expired, true is returned (duplicate).
      */
     fun isDuplicate(groupName: String, sender: String, content: String, timestamp: Long = System.currentTimeMillis()): Boolean {
-        val minute = timestamp / 60000
+        val minute = timestamp / MS_PER_MINUTE
         val key = "$groupName|$sender|$content|$minute"
 
         synchronized(cache) {
@@ -26,12 +34,14 @@ class MessageDeduplicator(private val maxSize: Int = 100, private val windowMs: 
                 val entry = iterator.next()
                 if (timestamp - entry.value > windowMs) {
                     iterator.remove()
-                } else {
-                    break
                 }
             }
             while (cache.size > maxSize) {
-                cache.remove(cache.keys.first())
+                val it = cache.entries.iterator()
+                if (it.hasNext()) {
+                    it.next()
+                    it.remove()
+                }
             }
             return false
         }
