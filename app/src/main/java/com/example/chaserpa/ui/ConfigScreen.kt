@@ -19,6 +19,7 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -54,6 +55,9 @@ fun ConfigScreen() {
     }
     var autoReply by remember { mutableStateOf(configRepository.autoReply) }
     var myNickname by remember { mutableStateOf(configRepository.myNickname) }
+    var monitorMode by remember { mutableStateOf(configRepository.monitorMode) }
+    var pollInterval by remember { mutableStateOf(configRepository.pollInterval) }
+    var adaptivePoll by remember { mutableStateOf(configRepository.adaptivePoll) }
     var savedMessage by remember { mutableStateOf<String?>(null) }
     val serviceRunning = WeWorkAccessibilityService.isRunning
 
@@ -137,7 +141,92 @@ fun ConfigScreen() {
 
             Spacer(modifier = Modifier.height(12.dp))
 
-            androidx.compose.foundation.layout.Row(
+            Text(
+                text = "监控模式",
+                style = MaterialTheme.typography.bodyLarge
+            )
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Button(
+                    onClick = { monitorMode = ConfigRepository.MonitorMode.HYBRID },
+                    modifier = Modifier.weight(1f),
+                    enabled = monitorMode != ConfigRepository.MonitorMode.HYBRID
+                ) {
+                    Text("🔄 混合")
+                }
+                Button(
+                    onClick = { monitorMode = ConfigRepository.MonitorMode.POLLING_ONLY },
+                    modifier = Modifier.weight(1f),
+                    enabled = monitorMode != ConfigRepository.MonitorMode.POLLING_ONLY
+                ) {
+                    Text("🔍 纯轮询")
+                }
+            }
+
+            Spacer(modifier = Modifier.height(4.dp))
+
+            Text(
+                text = when (monitorMode) {
+                    ConfigRepository.MonitorMode.HYBRID -> "混合模式：无障碍事件 + 定时轮询双保险"
+                    ConfigRepository.MonitorMode.POLLING_ONLY -> "纯轮询模式：仅依靠定时轮询抓取消息"
+                },
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            Text(
+                text = "轮询间隔：%.1f 秒".format(pollInterval / 1000f),
+                style = MaterialTheme.typography.bodyLarge
+            )
+
+            Spacer(modifier = Modifier.height(4.dp))
+
+            Slider(
+                value = pollInterval.toFloat(),
+                onValueChange = { pollInterval = it.toInt() },
+                valueRange = 1000f..10000f,
+                steps = 8,
+                modifier = Modifier.fillMaxWidth()
+            )
+
+            Spacer(modifier = Modifier.height(4.dp))
+
+            Text(
+                text = "1.0 秒 - 10.0 秒",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            Row(
+                verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(text = "自适应频率")
+                    Text(
+                        text = "忙时加快、闲时放慢，降低功耗",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Switch(
+                    checked = adaptivePoll,
+                    onCheckedChange = { adaptivePoll = it }
+                )
+            }
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            Row(
                 verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
                 modifier = Modifier.fillMaxWidth()
             ) {
@@ -163,6 +252,9 @@ fun ConfigScreen() {
                         .toSet()
                     configRepository.autoReply = autoReply
                     configRepository.myNickname = myNickname.trim()
+                    configRepository.monitorMode = monitorMode
+                    configRepository.pollInterval = pollInterval
+                    configRepository.adaptivePoll = adaptivePoll
                     savedMessage = "配置已保存"
                 },
                 modifier = Modifier.fillMaxWidth()
