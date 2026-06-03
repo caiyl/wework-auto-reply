@@ -19,6 +19,7 @@ class WeWorkAccessibilityService : AccessibilityService() {
     private lateinit var messagePusher: MessagePusher
     private lateinit var messageCollector: MessageCollector
     private lateinit var uiAutomator: WeWorkUIAutomator
+    private lateinit var autoReplyOrchestrator: AutoReplyOrchestrator
 
     override fun onServiceConnected() {
         super.onServiceConnected()
@@ -31,29 +32,35 @@ class WeWorkAccessibilityService : AccessibilityService() {
         MessageLog.add("[SYS] 配置加载完成，目标群: $groups")
 
         deduplicator = MessageDeduplicator()
+        uiAutomator = WeWorkUIAutomator(this)
+        autoReplyOrchestrator = AutoReplyOrchestrator(uiAutomator)
+
         messagePusher = MessagePusher(
             backendUrl = configRepository.backendUrl,
-            apiKey = configRepository.apiKey
+            apiKey = configRepository.apiKey,
+            onReply = { groupName, replyText ->
+                if (configRepository.autoReply) {
+                    MessageLog.add("[AUTO] Backend reply: $groupName -> $replyText")
+                    autoReplyOrchestrator.enqueue(groupName, replyText)
+                }
+            }
         )
-        uiAutomator = WeWorkUIAutomator(this)
+
         val myNickname = configRepository.myNickname
         messageCollector = MessageCollector(
             service = this,
             config = configRepository,
             onMessageCollected = { message ->
-            if (!deduplicator.isDuplicate(message.groupName, message.sender, message.content)) {
-                messagePusher.push(message)
-                if (configRepository.autoReply) {
-                    val content = message.content
-                    val replyText = "收到：$content"
-                    MessageLog.add("[AUTO] 触发自动回复: $replyText")
-                    uiAutomator.sendReply(message.groupName, replyText)
+                val timestamp = System.currentTimeMillis()
+                if (!deduplicator.isDuplicate(message.groupName, message.sender, message.content, timestamp)) {
+                    MessageLog.add("[CAPTURE] group=${message.groupName}, sender=${message.sender}, content=${message.content}")
+                    messagePusher.push(message)
+                } else {
+                    Log.d(TAG, "Duplicate message ignored: ${message.content}")
+                    MessageLog.add("[SYS] 重复消息已忽略")
                 }
-            } else {
-                Log.d(TAG, "Duplicate message ignored: ${message.content}")
-                MessageLog.add("[SYS] 重复消息已忽略")
             }
-        })
+        )
         MessageLog.add("[SYS] MessageCollector 初始化完成")
     }
 
@@ -72,5 +79,11 @@ class WeWorkAccessibilityService : AccessibilityService() {
         super.onDestroy()
         Log.i(TAG, "Accessibility service destroyed")
         isRunning = false
+        if (::messageCollector.isInitialized) {
+            messageCollector.destroy()
+        }
+        if (::autoReplyOrchestrator.isInitialized) {
+            autoReplyOrchestrator.clear()
+        }
     }
 }

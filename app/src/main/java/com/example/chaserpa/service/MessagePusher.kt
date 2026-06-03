@@ -14,7 +14,8 @@ import java.util.concurrent.TimeUnit
 
 class MessagePusher(
     private val backendUrl: String,
-    private val apiKey: String
+    private val apiKey: String,
+    private val onReply: ((String, String) -> Unit)? = null  // (groupName, replyText)
 ) {
     companion object {
         private const val TAG = "MessagePusher"
@@ -69,6 +70,16 @@ class MessagePusher(
 
             override fun onResponse(call: Call, response: Response) {
                 if (response.isSuccessful) {
+                    val body = response.body?.string()
+                    if (body != null && onReply != null) {
+                        try {
+                            val json = org.json.JSONObject(body)
+                            val reply = json.optString("reply", "")
+                            if (reply.isNotEmpty()) {
+                                onReply(message.groupName, reply)
+                            }
+                        } catch (_: Exception) {}
+                    }
                     Log.i(TAG, "Message pushed successfully: ${message.groupName} / ${message.sender}")
                 } else {
                     Log.e(TAG, "Push failed with code: ${response.code}")
