@@ -18,9 +18,11 @@ class UIPollingCollector(
         private const val ID_GROUP_NAME = "com.tencent.wework:id/hrm"
         private const val ID_TIME = "com.tencent.wework:id/g86"
         private const val ID_MESSAGE_SUMMARY = "com.tencent.wework:id/mar"
+        private const val MAX_SCAN_ITEMS = 10
     }
 
     private val handler = Handler(Looper.getMainLooper())
+    @Volatile
     private var isRunning = false
     private val listSnapshot = mutableMapOf<String, Pair<String, String>>()
     private var currentInterval = config.pollInterval.toLong()
@@ -31,7 +33,7 @@ class UIPollingCollector(
     fun start() {
         if (isRunning) return
         isRunning = true
-        currentInterval = config.pollInterval.toLong()
+        currentInterval = config.pollInterval.toLong().coerceAtLeast(500L)
         consecutiveIdle = 0
         MessageLog.add("[POLL] UI polling started, interval=${currentInterval}ms")
         scheduleNext()
@@ -56,46 +58,73 @@ class UIPollingCollector(
             scheduleNext()
             return
         }
-        val hasNewMessage = scanMessageList(root)
-        if (config.adaptivePoll) {
-            if (hasNewMessage) {
-                currentInterval = 2000L
-                consecutiveIdle = 0
-            } else {
-                consecutiveIdle++
-                if (consecutiveIdle >= 3) {
-                    currentInterval = 5000L
+        try {
+            val hasNewMessage = scanMessageList(root)
+            if (config.adaptivePoll) {
+                if (hasNewMessage) {
+                    currentInterval = 2000L
+                    consecutiveIdle = 0
                 } else {
-                    currentInterval = config.pollInterval.toLong()
+                    consecutiveIdle++
+                    if (consecutiveIdle >= 3) {
+                        currentInterval = 5000L
+                    } else {
+                        currentInterval = config.pollInterval.toLong().coerceAtLeast(500L)
+                    }
                 }
             }
+        } finally {
+            root.recycle()
         }
         scheduleNext()
     }
 
     private fun scanMessageList(root: AccessibilityNodeInfo): Boolean {
-        val recyclerView = root.findAccessibilityNodeInfosByViewId(ID_RECYCLER_VIEW).firstOrNull() ?: return false
+        val recyclerViewNodes = root.findAccessibilityNodeInfosByViewId(ID_RECYCLER_VIEW)
+        val recyclerView = recyclerViewNodes.firstOrNull() ?: run {
+            recyclerViewNodes.forEach { it.recycle() }
+            return false
+        }
+        // Keep recyclerView alive for scanning; recycle the rest of the list
+        val nodesToRecycle = mutableListOf<AccessibilityNodeInfo>()
         var hasNewMessage = false
         val currentSnapshot = mutableMapOf<String, Pair<String, String>>()
-        for (i in 0 until minOf(recyclerView.childCount, 10)) {
-            val item = recyclerView.getChild(i) ?: continue
-            val groupNameNode = item.findAccessibilityNodeInfosByViewId(ID_GROUP_NAME).firstOrNull()
-            val timeNode = item.findAccessibilityNodeInfosByViewId(ID_TIME).firstOrNull()
-            val summaryNode = item.findAccessibilityNodeInfosByViewId(ID_MESSAGE_SUMMARY).firstOrNull()
-            val groupName = groupNameNode?.text?.toString() ?: continue
-            val time = timeNode?.text?.toString() ?: ""
-            val summary = summaryNode?.text?.toString() ?: ""
-            currentSnapshot[groupName] = Pair(summary, time)
-            if (!config.targetGroups.contains(groupName)) continue
-            val last = listSnapshot[groupName]
-            if (last == null || last.first != summary || last.second != time) {
-                MessageLog.add("[POLL] New message detected in '$groupName': $summary")
-                hasNewMessage = true
-                readChatDetail(groupName)
+        try {
+            for (i in 0 until minOf(recyclerView.childCount, MAX_SCAN_ITEMS)) {
+                val item = recyclerView.getChild(i) ?: continue
+                nodesToRecycle.add(item)
+                val groupNameNodes = item.findAccessibilityNodeInfosByViewId(ID_GROUP_NAME)
+                val timeNodes = item.findAccessibilityNodeInfosByViewId(ID_TIME)
+                val summaryNodes = item.findAccessibilityNodeInfosByViewId(ID_MESSAGE_SUMMARY)
+                val groupNameNode = groupNameNodes.firstOrNull()
+                val timeNode = timeNodes.firstOrNull()
+                val summaryNode = summaryNodes.firstOrNull()
+                nodesToRecycle.addAll(groupNameNodes)
+                nodesToRecycle.addAll(timeNodes)
+                nodesToRecycle.addAll(summaryNodes)
+                val groupName = groupNameNode?.text?.toString() ?: continue
+                val time = timeNode?.text?.toString() ?: ""
+                val summary = summaryNode?.text?.toString() ?: ""
+                currentSnapshot[groupName] = Pair(summary, time)
+                if (!config.targetGroups.contains(groupName)) continue
+                synchronized(listSnapshot) {
+                    val last = listSnapshot[groupName]
+                    if (last == null || last.first != summary || last.second != time) {
+                        MessageLog.add("[POLL] New message detected in '$groupName': $summary")
+                        hasNewMessage = true
+                        readChatDetail(groupName)
+                    }
+                }
             }
+            synchronized(listSnapshot) {
+                listSnapshot.clear()
+                listSnapshot.putAll(currentSnapshot)
+            }
+        } finally {
+            nodesToRecycle.forEach { it.recycle() }
+            recyclerView.recycle()
+            recyclerViewNodes.forEach { if (it !== recyclerView) it.recycle() }
         }
-        listSnapshot.clear()
-        listSnapshot.putAll(currentSnapshot)
         return hasNewMessage
     }
 
@@ -107,18 +136,37 @@ class UIPollingCollector(
 
     private fun findWeWorkRoot(): AccessibilityNodeInfo? {
         val windows = service.windows
-        for (window in windows) {
-            val root = window.root
-            if (root?.packageName?.toString() == PACKAGE_WEWORK && root.childCount >= 3) {
-                return root
+        val fetchedRoots = mutableListOf<AccessibilityNodeInfo>()
+        var result: AccessibilityNodeInfo? = null
+        try {
+            for (window in windows) {
+                val root = window.root ?: continue
+                fetchedRoots.add(root)
+                if (root.packageName?.toString() == PACKAGE_WEWORK && root.childCount >= 3) {
+                    result = root
+                    break
+                }
             }
-        }
-        for (window in windows) {
-            val root = window.root
-            if (root?.packageName?.toString() == PACKAGE_WEWORK) {
-                return root
+            if (result == null) {
+                for (window in windows) {
+                    val root = window.root ?: continue
+                    if (!fetchedRoots.contains(root)) {
+                        fetchedRoots.add(root)
+                    }
+                    if (root.packageName?.toString() == PACKAGE_WEWORK) {
+                        result = root
+                        break
+                    }
+                }
             }
+            if (result == null) {
+                result = service.rootInActiveWindow
+                if (result != null) fetchedRoots.add(result)
+            }
+            fetchedRoots.remove(result)
+            return result
+        } finally {
+            fetchedRoots.forEach { it.recycle() }
         }
-        return service.rootInActiveWindow
     }
 }
