@@ -129,9 +129,202 @@ class UIPollingCollector(
     }
 
     private fun readChatDetail(groupName: String) {
-        // Placeholder for now: log intent
-        // Full implementation in Task 9
-        MessageLog.add("[POLL] Will read chat detail for '$groupName' (Task 9)")
+        MessageLog.add("[POLL] readChatDetail start for '$groupName'")
+
+        val root = findWeWorkRoot()
+        if (root == null) {
+            MessageLog.add("[POLL] readChatDetail: WeWork root not found")
+            return
+        }
+
+        // Step 1: find RecyclerView and click the group item
+        val recyclerViewNodes = root.findAccessibilityNodeInfosByViewId(ID_RECYCLER_VIEW)
+        val recyclerView = recyclerViewNodes.firstOrNull()
+        if (recyclerView == null) {
+            MessageLog.add("[POLL] readChatDetail: RecyclerView not found")
+            recyclerViewNodes.forEach { it.recycle() }
+            root.recycle()
+            return
+        }
+
+        var groupItemNode: AccessibilityNodeInfo? = null
+        val nodesToRecycle = mutableListOf<AccessibilityNodeInfo>()
+        try {
+            for (i in 0 until minOf(recyclerView.childCount, MAX_SCAN_ITEMS)) {
+                val item = recyclerView.getChild(i) ?: continue
+                nodesToRecycle.add(item)
+                val groupNameNodes = item.findAccessibilityNodeInfosByViewId(ID_GROUP_NAME)
+                val nameNode = groupNameNodes.firstOrNull()
+                nodesToRecycle.addAll(groupNameNodes)
+                if (nameNode?.text?.toString() == groupName) {
+                    // find clickable parent
+                    var current: AccessibilityNodeInfo? = item
+                    var depth = 0
+                    while (current != null && depth < 10) {
+                        if (current.isClickable) {
+                            groupItemNode = current
+                            break
+                        }
+                        val parent = current.parent
+                        if (parent != null) {
+                            nodesToRecycle.add(parent)
+                        }
+                        current = parent
+                        depth++
+                    }
+                    break
+                }
+            }
+        } finally {
+            nodesToRecycle.forEach { it.recycle() }
+            recyclerView.recycle()
+            recyclerViewNodes.forEach { if (it !== recyclerView) it.recycle() }
+        }
+
+        if (groupItemNode == null) {
+            MessageLog.add("[POLL] readChatDetail: clickable group item not found for '$groupName'")
+            root.recycle()
+            return
+        }
+
+        val clickSuccess = groupItemNode.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+        MessageLog.add("[POLL] readChatDetail: click group item result=$clickSuccess")
+        if (!clickSuccess) {
+            MessageLog.add("[POLL] readChatDetail: click failed, abort")
+            groupItemNode.recycle()
+            root.recycle()
+            return
+        }
+        groupItemNode.recycle()
+        root.recycle()
+
+        // Step 2: wait for chat detail page
+        handler.postDelayed({
+            // Step 3: verify chat detail page
+            val chatRoot = findWeWorkRoot()
+            if (chatRoot == null) {
+                MessageLog.add("[POLL] readChatDetail: chat root not found after wait")
+                return@postDelayed
+            }
+
+            val inChat = isInChatScreen(chatRoot, groupName)
+            if (!inChat) {
+                MessageLog.add("[POLL] readChatDetail: not in chat screen for '$groupName', abort")
+                chatRoot.recycle()
+                return@postDelayed
+            }
+
+            // Step 4: read chat messages
+            val messages = extractChatMessages(chatRoot, groupName)
+            MessageLog.add("[POLL] readChatDetail: extracted ${messages.size} messages")
+            messages.forEach { msg ->
+                onMessage(msg)
+            }
+            chatRoot.recycle()
+
+            // Step 5: return to message list
+            handler.postDelayed({
+                service.performGlobalAction(AccessibilityService.GLOBAL_ACTION_BACK)
+                MessageLog.add("[POLL] readChatDetail: performed back action")
+            }, 1500)
+        }, 2000)
+    }
+
+    private fun isInChatScreen(root: AccessibilityNodeInfo, groupName: String): Boolean {
+        val titleNodes = root.findAccessibilityNodeInfosByText(groupName)
+        val hasTitle = titleNodes.any {
+            val t = it.text?.toString() ?: ""
+            t.contains(groupName) && !isNodeInRecyclerView(it)
+        }
+        titleNodes.forEach { it.recycle() }
+
+        val hasInput = findInputField(root) != null
+        return hasTitle && hasInput
+    }
+
+    private fun isNodeInRecyclerView(node: AccessibilityNodeInfo): Boolean {
+        var current: AccessibilityNodeInfo? = node
+        var depth = 0
+        while (current != null && depth < 10) {
+            val parent = current.parent
+            if (parent?.className?.toString()?.contains("RecyclerView") == true ||
+                parent?.className?.toString()?.contains("ListView") == true) {
+                parent.recycle()
+                return true
+            }
+            current = parent
+            depth++
+        }
+        return false
+    }
+
+    private fun findInputField(root: AccessibilityNodeInfo): AccessibilityNodeInfo? {
+        val hints = listOf("发消息", "添加消息内容", "输入消息", "请输入消息")
+        for (hint in hints) {
+            val nodes = root.findAccessibilityNodeInfosByText(hint)
+            val match = nodes.find { it.text?.toString() == hint }
+            if (match != null) {
+                nodes.forEach { if (it !== match) it.recycle() }
+                return match
+            }
+            nodes.forEach { it.recycle() }
+        }
+        // Fallback: bottom EditText
+        val rootRect = android.graphics.Rect()
+        root.getBoundsInScreen(rootRect)
+        val minTop = (rootRect.top + rootRect.height() * 0.7).toInt()
+        val nodeRect = android.graphics.Rect()
+        val deque = java.util.ArrayDeque<AccessibilityNodeInfo>()
+        deque.add(root)
+        while (deque.isNotEmpty()) {
+            val node = deque.poll() ?: continue
+            if (node.className?.toString() == "android.widget.EditText") {
+                node.getBoundsInScreen(nodeRect)
+                if (nodeRect.top >= minTop) {
+                    return node
+                }
+            }
+            for (i in 0 until node.childCount) {
+                node.getChild(i)?.let { deque.add(it) }
+            }
+        }
+        return null
+    }
+
+    private fun extractChatMessages(
+        root: AccessibilityNodeInfo,
+        groupName: String
+    ): List<MessagePusher.WeWorkMessage> {
+        val messages = mutableListOf<MessagePusher.WeWorkMessage>()
+        val deque = java.util.ArrayDeque<AccessibilityNodeInfo>()
+        deque.add(root)
+        val inputHints = setOf("发消息", "添加消息内容", "输入消息", "请输入消息")
+        while (deque.isNotEmpty()) {
+            val node = deque.poll() ?: continue
+            val cls = node.className?.toString() ?: ""
+            if (cls.contains("TextView")) {
+                val text = node.text?.toString() ?: ""
+                if (text.isNotBlank() &&
+                    text != groupName &&
+                    !text.contains(groupName) &&
+                    text !in inputHints &&
+                    isNodeInRecyclerView(node)
+                ) {
+                    messages.add(
+                        MessagePusher.WeWorkMessage(
+                            groupName = groupName,
+                            sender = "UI采集",
+                            content = text,
+                            timestamp = System.currentTimeMillis()
+                        )
+                    )
+                }
+            }
+            for (i in 0 until node.childCount) {
+                node.getChild(i)?.let { deque.add(it) }
+            }
+        }
+        return messages
     }
 
     private fun findWeWorkRoot(): AccessibilityNodeInfo? {
