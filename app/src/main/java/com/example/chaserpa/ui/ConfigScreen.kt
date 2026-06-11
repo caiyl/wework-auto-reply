@@ -59,6 +59,9 @@ fun ConfigScreen() {
     var monitorMode by remember { mutableStateOf(configRepository.monitorMode) }
     var pollInterval by remember { mutableStateOf(configRepository.pollInterval) }
     var adaptivePoll by remember { mutableStateOf(configRepository.adaptivePoll) }
+    var replyBackendUrl by remember { mutableStateOf(configRepository.replyBackendUrl) }
+    var replyPollInterval by remember { mutableStateOf(configRepository.replyPollInterval) }
+    var monitoringEnabled by remember { mutableStateOf(configRepository.monitoringEnabled) }
     var savedMessage by remember { mutableStateOf<String?>(null) }
     val serviceRunning = WeWorkAccessibilityService.isRunning
 
@@ -94,6 +97,35 @@ fun ConfigScreen() {
                 }
             }
 
+            Spacer(modifier = Modifier.height(12.dp))
+
+            Row(
+                verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = if (monitoringEnabled) "✅ 监控已开启" else "⏸️ 监控已暂停",
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = if (monitoringEnabled) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error
+                    )
+                    Text(
+                        text = "关闭后可自由操作手机，不会干扰企业微信",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Switch(
+                    checked = monitoringEnabled,
+                    onCheckedChange = {
+                        monitoringEnabled = it
+                        configRepository.monitoringEnabled = it
+                        WeWorkAccessibilityService.updateMonitoringState(it)
+                        savedMessage = if (it) "监控已开启" else "监控已暂停"
+                    }
+                )
+            }
+
             Spacer(modifier = Modifier.height(16.dp))
 
             OutlinedTextField(
@@ -115,6 +147,20 @@ fun ConfigScreen() {
                 onValueChange = { apiKey = it },
                 label = { Text("API Key") },
                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
+                modifier = Modifier.fillMaxWidth()
+            )
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            OutlinedTextField(
+                value = replyBackendUrl,
+                onValueChange = { replyBackendUrl = it },
+                label = { Text("回复拉取地址（留空则复用上方地址）") },
+                placeholder = { Text("https://your-backend.com/api/pending-replies") },
+                keyboardOptions = KeyboardOptions(
+                    keyboardType = KeyboardType.Uri,
+                    imeAction = ImeAction.Next
+                ),
                 modifier = Modifier.fillMaxWidth()
             )
 
@@ -200,6 +246,31 @@ fun ConfigScreen() {
 
             Spacer(modifier = Modifier.height(12.dp))
 
+            Text(
+                text = "回复轮询间隔: ${replyPollInterval / 1000} 秒",
+                style = MaterialTheme.typography.bodyLarge
+            )
+
+            Spacer(modifier = Modifier.height(4.dp))
+
+            Slider(
+                value = replyPollInterval.toFloat(),
+                onValueChange = { replyPollInterval = it.toInt() },
+                valueRange = 1000f..30000f,
+                steps = 28,
+                modifier = Modifier.fillMaxWidth()
+            )
+
+            Spacer(modifier = Modifier.height(4.dp))
+
+            Text(
+                text = "1.0 秒 - 30.0 秒",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+
+            Spacer(modifier = Modifier.height(12.dp))
+
             Row(
                 verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
                 modifier = Modifier.fillMaxWidth()
@@ -249,6 +320,8 @@ fun ConfigScreen() {
                     configRepository.monitorMode = monitorMode
                     configRepository.pollInterval = pollInterval
                     configRepository.adaptivePoll = adaptivePoll
+                    configRepository.replyBackendUrl = replyBackendUrl.trim()
+                    configRepository.replyPollInterval = replyPollInterval
                     savedMessage = "配置已保存"
                 },
                 modifier = Modifier.fillMaxWidth()

@@ -49,30 +49,29 @@ class MessagePusher(
             MessageLog.add("[PRINT] $logLine")
             return
         }
-        if (apiKey.isEmpty()) {
-            Log.w(TAG, "API Key not configured, skipping push")
-            MessageLog.add("[SKIP] API Key missing")
-            return
-        }
         MessageLog.add("[PUSH] $logLine")
         flushPending()
         doPush(message)
     }
 
     private fun doPush(message: WeWorkMessage, retryCount: Int = 0) {
+        // 后台 API 格式: {"groupName":"测试群2","sender":"李四","content":"早上好"}
         val json = JSONObject().apply {
             put("groupName", message.groupName)
             put("sender", message.sender)
             put("content", message.content)
-            put("timestamp", message.timestamp)
         }
 
-        val request = Request.Builder()
+        val requestBuilder = Request.Builder()
             .url(backendUrl)
-            .header("X-API-Key", apiKey)
             .header("Content-Type", "application/json")
             .post(json.toString().toRequestBody(JSON))
-            .build()
+
+        if (apiKey.isNotEmpty()) {
+            requestBuilder.header("X-API-Key", apiKey)
+        }
+
+        val request = requestBuilder.build()
 
         client.newCall(request).enqueue(object : Callback {
             override fun onFailure(call: Call, e: IOException) {

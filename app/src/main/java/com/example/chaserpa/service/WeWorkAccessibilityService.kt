@@ -12,6 +12,20 @@ class WeWorkAccessibilityService : AccessibilityService() {
         @Volatile
         var isRunning: Boolean = false
             private set
+
+        @Volatile
+        var instance: WeWorkAccessibilityService? = null
+            private set
+
+        /**
+         * 外部调用（如 ConfigScreen 切换开关）来更新监控状态。
+         */
+        fun updateMonitoringState(enabled: Boolean) {
+            val svc = instance
+            if (svc != null && isRunning) {
+                svc.applyMonitoringState(enabled)
+            }
+        }
     }
 
     private lateinit var configRepository: ConfigRepository
@@ -20,16 +34,27 @@ class WeWorkAccessibilityService : AccessibilityService() {
     private lateinit var messageCollector: MessageCollector
     private lateinit var uiAutomator: WeWorkUIAutomator
     private lateinit var autoReplyOrchestrator: AutoReplyOrchestrator
+    private var uiPollingCollector: UIPollingCollector? = null
+    private var replyWorker: ReplyWorker? = null
+    private var keepAliveWorker: KeepAliveWorker? = null
+
+    @Volatile
+    private var monitoringEnabled = true
+
+    @Volatile
+    private var isChaserpaForeground = false
 
     override fun onServiceConnected() {
         super.onServiceConnected()
         Log.i(TAG, "Accessibility service connected")
         MessageLog.add("[SYS] 无障碍服务已连接")
         isRunning = true
+        instance = this
 
         configRepository = ConfigRepository(this)
+        monitoringEnabled = configRepository.monitoringEnabled
         val groups = configRepository.targetGroups
-        MessageLog.add("[SYS] 配置加载完成，目标群: $groups")
+        MessageLog.add("[SYS] 配置加载完成，目标群: $groups, 监控状态: $monitoringEnabled")
 
         deduplicator = MessageDeduplicator()
         uiAutomator = WeWorkUIAutomator(this)
@@ -39,18 +64,17 @@ class WeWorkAccessibilityService : AccessibilityService() {
             backendUrl = configRepository.backendUrl,
             apiKey = configRepository.apiKey,
             onReply = { groupName, replyText ->
-                if (configRepository.autoReply) {
-                    MessageLog.add("[AUTO] Backend reply: $groupName -> $replyText")
-                    autoReplyOrchestrator.enqueue(groupName, replyText)
-                }
+                // 同步响应仅记录日志，真正的回复由 ReplyWorker 异步拉取后执行
+                MessageLog.add("[AUTO] Backend sync reply (ignored, will pull async): $groupName -> $replyText")
             }
         )
 
         val myNickname = configRepository.myNickname
-        messageCollector = MessageCollector(
-            service = this,
-            config = configRepository,
-            onMessageCollected = { message ->
+        val onMessageCollected: (MessagePusher.WeWorkMessage) -> Unit = { message ->
+            // 过滤自己发送的消息，防止死循环
+            if (myNickname.isNotEmpty() && message.sender == myNickname) {
+                MessageLog.add("[SYS] 过滤自己发送的消息: ${message.content}")
+            } else {
                 val timestamp = System.currentTimeMillis()
                 if (!deduplicator.isDuplicate(message.groupName, message.sender, message.content, timestamp)) {
                     MessageLog.add("[CAPTURE] group=${message.groupName}, sender=${message.sender}, content=${message.content}")
@@ -60,11 +84,87 @@ class WeWorkAccessibilityService : AccessibilityService() {
                     MessageLog.add("[SYS] 重复消息已忽略")
                 }
             }
+        }
+
+        messageCollector = MessageCollector(
+            service = this,
+            config = configRepository,
+            onMessageCollected = onMessageCollected
         )
         MessageLog.add("[SYS] MessageCollector 初始化完成")
+
+        uiPollingCollector = UIPollingCollector(
+            service = this,
+            config = configRepository,
+            onMessage = onMessageCollected
+        )
+
+        replyWorker = ReplyWorker(
+            service = this,
+            config = configRepository,
+            uiAutomator = uiAutomator
+        )
+
+        keepAliveWorker = KeepAliveWorker(this)
+
+        // 初始化时检测一次当前前台状态
+        val currentRoot = rootInActiveWindow
+        isChaserpaForeground = currentRoot?.packageName?.toString() == packageName
+        currentRoot?.recycle()
+
+        // 根据当前监控开关状态启动/暂停
+        applyMonitoringState(monitoringEnabled)
+    }
+
+    private fun applyMonitoringState(enabled: Boolean) {
+        monitoringEnabled = enabled
+        if (enabled) {
+            MessageLog.add("[SYS] 监控已开启")
+            if (isChaserpaForeground) {
+                MessageLog.add("[SYS] 当前在配置页，Worker 暂不启动")
+            } else {
+                startAllWorkers()
+            }
+        } else {
+            MessageLog.add("[SYS] 监控已暂停")
+            stopAllWorkers()
+        }
+    }
+
+    private fun startAllWorkers() {
+        uiPollingCollector?.start()
+        replyWorker?.start()
+        keepAliveWorker?.start()
+    }
+
+    private fun stopAllWorkers() {
+        uiPollingCollector?.stop()
+        replyWorker?.stop()
+        keepAliveWorker?.stop()
+        UiController.release()
+        autoReplyOrchestrator.clear()
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent) {
+        // 监听 ChaserPA 自身前台状态，进入前台时暂停所有 Worker，离开时恢复
+        if (event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
+            val pkg = event.packageName?.toString()
+            val wasForeground = isChaserpaForeground
+            isChaserpaForeground = (pkg == packageName)
+            if (wasForeground && !isChaserpaForeground) {
+                // 离开 ChaserPA，恢复所有 Worker
+                if (monitoringEnabled) {
+                    MessageLog.add("[SYS] 离开配置页，恢复 Worker")
+                    startAllWorkers()
+                }
+            } else if (!wasForeground && isChaserpaForeground) {
+                // 进入 ChaserPA，暂停所有 Worker
+                MessageLog.add("[SYS] 进入配置页，暂停 Worker")
+                stopAllWorkers()
+            }
+        }
+
+        if (!monitoringEnabled) return
         if (!::messageCollector.isInitialized) {
             return
         }
@@ -79,6 +179,10 @@ class WeWorkAccessibilityService : AccessibilityService() {
         super.onDestroy()
         Log.i(TAG, "Accessibility service destroyed")
         isRunning = false
+        instance = null
+        uiPollingCollector?.stop()
+        replyWorker?.stop()
+        keepAliveWorker?.stop()
         if (::messageCollector.isInitialized) {
             messageCollector.destroy()
         }

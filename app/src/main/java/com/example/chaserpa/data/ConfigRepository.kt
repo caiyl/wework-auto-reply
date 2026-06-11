@@ -20,6 +20,9 @@ class ConfigRepository(context: Context) {
         private const val KEY_MONITOR_MODE = "monitor_mode"
         private const val KEY_POLL_INTERVAL = "poll_interval"
         private const val KEY_ADAPTIVE_POLL = "adaptive_poll"
+        private const val KEY_REPLY_POLL_INTERVAL = "reply_poll_interval"
+        private const val KEY_REPLY_BACKEND_URL = "reply_backend_url"
+        private const val KEY_MONITORING_ENABLED = "monitoring_enabled"
     }
 
     var backendUrl: String
@@ -63,6 +66,18 @@ class ConfigRepository(context: Context) {
     var adaptivePoll: Boolean
         get() = prefs.getBoolean(KEY_ADAPTIVE_POLL, true)
         set(value) = prefs.edit().putBoolean(KEY_ADAPTIVE_POLL, value).apply()
+
+    var replyPollInterval: Int
+        get() = prefs.getInt(KEY_REPLY_POLL_INTERVAL, 5000).coerceIn(1000, 30000)
+        set(value) = prefs.edit().putInt(KEY_REPLY_POLL_INTERVAL, value.coerceIn(1000, 30000)).apply()
+
+    var replyBackendUrl: String
+        get() = prefs.getString(KEY_REPLY_BACKEND_URL, "") ?: ""
+        set(value) = prefs.edit().putString(KEY_REPLY_BACKEND_URL, value).apply()
+
+    var monitoringEnabled: Boolean
+        get() = prefs.getBoolean(KEY_MONITORING_ENABLED, true)
+        set(value) = prefs.edit().putBoolean(KEY_MONITORING_ENABLED, value).apply()
 
     fun isConfigured(): Boolean {
         return targetGroups.isNotEmpty()

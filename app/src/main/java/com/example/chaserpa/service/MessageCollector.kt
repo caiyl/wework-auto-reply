@@ -9,7 +9,8 @@ import com.example.chaserpa.data.ConfigRepository
 class MessageCollector(
     private val service: AccessibilityService,
     private val config: ConfigRepository,
-    private val onMessageCollected: (MessagePusher.WeWorkMessage) -> Unit
+    private val onMessageCollected: (MessagePusher.WeWorkMessage) -> Unit,
+    private val autoReplyOrchestrator: AutoReplyOrchestrator? = null
 ) {
     companion object {
         private const val TAG = "MessageCollector"
@@ -18,7 +19,7 @@ class MessageCollector(
 
     private val foregroundDetector = ForegroundDetector()
     private val notificationCollector = NotificationEventCollector(config.targetGroups, onMessageCollected)
-    private val uiPollingCollector = UIPollingCollector(service, config, onMessageCollected)
+    private val uiPollingCollector = UIPollingCollector(service, config, onMessageCollected, autoReplyOrchestrator, myNickname = config.myNickname)
 
     private val handler = Handler(Looper.getMainLooper())
     private val transitionRunnable = Runnable {

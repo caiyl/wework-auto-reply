@@ -2,10 +2,10 @@ package com.example.chaserpa.service
 
 import java.util.LinkedHashMap
 
-class MessageDeduplicator(private val maxSize: Int = 100, private val windowMs: Long = MS_PER_MINUTE) {
+class MessageDeduplicator(private val maxSize: Int = 100, private val windowMs: Long = MS_FIVE_MINUTES) {
 
     companion object {
-        private const val MS_PER_MINUTE = 60_000L
+        private const val MS_FIVE_MINUTES = 300_000L
     }
 
     init {
@@ -18,10 +18,12 @@ class MessageDeduplicator(private val maxSize: Int = 100, private val windowMs: 
      * Checks whether this message already exists (deduplication).
      * If it does not exist or has expired, it is added to the cache and false is returned (not a duplicate).
      * If it exists and has not expired, true is returned (duplicate).
+     *
+     * NOTE: key does NOT include minute to avoid duplicate pushes when the same message
+     * spans across a minute boundary (e.g. polled at 10:59 and again at 11:00).
      */
     fun isDuplicate(groupName: String, sender: String, content: String, timestamp: Long = System.currentTimeMillis()): Boolean {
-        val minute = timestamp / MS_PER_MINUTE
-        val key = "$groupName|$sender|$content|$minute"
+        val key = "$groupName|$sender|$content"
 
         synchronized(cache) {
             val existing = cache[key]

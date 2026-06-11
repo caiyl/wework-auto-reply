@@ -13,9 +13,11 @@ object MessageLog {
 
     fun add(log: String) {
         val timestamp = timeFormat.format(Date())
-        _logs.add(0, "[$timestamp] $log")
-        if (_logs.size > 50) {
-            _logs.removeLast()
+        synchronized(this) {
+            _logs.add(0, "[$timestamp] $log")
+            while (_logs.size > 50) {
+                _logs.removeAt(_logs.lastIndex)
+            }
         }
     }
 

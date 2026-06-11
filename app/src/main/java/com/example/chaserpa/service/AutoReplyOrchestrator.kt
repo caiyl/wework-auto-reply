@@ -59,4 +59,6 @@ class AutoReplyOrchestrator(
         }
         handler.removeCallbacksAndMessages(null)
     }
+
+    fun isBusy(): Boolean = synchronized(this) { isProcessing || queue.isNotEmpty() }
 }
