@@ -20,13 +20,39 @@ class UIPollingCollector(
     companion object {
         private const val TAG = "UIPollingCollector"
         private const val PACKAGE_WEWORK = "com.tencent.wework"
-        private const val ID_RECYCLER_VIEW = "com.tencent.wework:id/cxl"
-        private const val ID_GROUP_NAME = "com.tencent.wework:id/hrm"
-        private const val ID_TIME = "com.tencent.wework:id/g86"
-        private const val ID_MESSAGE_SUMMARY = "com.tencent.wework:id/mar"
-        private const val ID_CHAT_LISTVIEW = "com.tencent.wework:id/iis"
-        private const val ID_CHAT_CONTENT = "com.tencent.wework:id/i8u"
-        private const val ID_CHAT_TIME = "com.tencent.wework:id/i9p"
+
+        // =================================================================
+        // 以下为 vivo 手机企业微信版本的 view ID（通过 uiautomator dump 获取）
+        // 注意：不同手机厂商（OPPO/vivo/小米等）、不同系统版本、不同企业微信版本，
+        // 这些 resource-id 可能会发生变化。适配新设备时需要重新 dump 确认。
+        // =================================================================
+
+        // ---------------- 消息列表页（企业微信首页）----------------
+        /** 消息列表 RecyclerView，bounds 约占屏幕 [0,240][1080,2219] */
+        private const val ID_RECYCLER_VIEW = "com.tencent.wework:id/czp"
+        /** 列表项中的群名 TextView，如 "智能客服测试2群" */
+        private const val ID_GROUP_NAME = "com.tencent.wework:id/hrr"
+        /** 列表项中的时间 TextView，如 "昨天"、"12分钟前" */
+        private const val ID_TIME = "com.tencent.wework:id/g80"
+        /** 列表项中的消息摘要 TextView，如 "chase: 7787" */
+        private const val ID_MESSAGE_SUMMARY = "com.tencent.wework:id/mdj"
+
+        // ---------------- 群聊详情页 ----------------
+        /** 聊天消息列表 ListView（scrollable=true），bounds [0,240][1080,2085] */
+        private const val ID_CHAT_LISTVIEW = "com.tencent.wework:id/iju"
+        /** 消息气泡中的内容 TextView，如 "1440850817590，诊断一下" */
+        private const val ID_CHAT_CONTENT = "com.tencent.wework:id/i9j"
+        /** 时间分隔 TextView，如 "昨天  9:30"、"此群为外部群，了解更多" */
+        private const val ID_CHAT_TIME = "com.tencent.wework:id/i_d"
+
+        // 昵称节点（如 "chase"、"＠微信"）没有 resource-id（resource-id=""），
+        // 需要通过 BFS 遍历气泡内无 id 的 TextView 来提取。
+
+        // ---------------- 底部输入区 ----------------
+        // 输入框 hint: "发消息或按住..."，resource-id: i_6，class: EditText
+        // 发送按钮: text="发送"，resource-id: i_2，class: Button（输入文字后才出现）
+        // 注：输入区 ID 定义在 WeWorkUIAutomator.kt 中
+
         private const val MAX_SCAN_ITEMS = 10
         private const val MSG_MAX_AGE_MS = 300_000L // 5分钟
 
@@ -83,6 +109,8 @@ class UIPollingCollector(
     }
 
     private val handler = Handler(Looper.getMainLooper())
+    // 使用专门的 Runnable 实例作为轮询 token，start() 只移除它，保留 readChatDetail 的 checkRunnable
+    private val pollRunnable = Runnable { doPoll() }
     @Volatile
     private var isRunning = false
     private val listSnapshot = mutableMapOf<String, Pair<String, String>>()
@@ -94,6 +122,8 @@ class UIPollingCollector(
 
     fun start() {
         if (isRunning) return
+        // 只移除轮询 callback，保留 readChatDetail 的 checkRunnable 让它完成
+        handler.removeCallbacks(pollRunnable)
         isRunning = true
         currentInterval = config.pollInterval.toLong().coerceAtLeast(500L)
         consecutiveIdle = 0
@@ -103,13 +133,13 @@ class UIPollingCollector(
 
     fun stop() {
         isRunning = false
-        handler.removeCallbacksAndMessages(null)
+        // 不清空 handler，让正在执行的 readChatDetail/checkRunnable 能正常完成
         MessageLog.add("[POLL] UI polling stopped")
     }
 
     private fun scheduleNext() {
         if (!isRunning) return
-        handler.postDelayed({ doPoll() }, currentInterval)
+        handler.postDelayed(pollRunnable, currentInterval)
     }
 
     private fun doPoll() {
@@ -119,54 +149,69 @@ class UIPollingCollector(
             scheduleNext()
             return
         }
-        val root = findWeWorkRoot()
-        if (root == null) {
-            MessageLog.add("[POLL] WeWork window not found，尝试启动企业微信")
-            launchWeWork()
-            scheduleNext()
-            return
-        }
-
-        // 如果当前在群聊页（有输入框但无RecyclerView），先按Back回到消息列表
-        val recyclerViewNodes = root.findAccessibilityNodeInfosByViewId(ID_RECYCLER_VIEW)
-        val hasRecycler = recyclerViewNodes.isNotEmpty()
-        recyclerViewNodes.forEach { it.recycle() }
-
-        if (!hasRecycler) {
-            val hasInput = findInputField(root) != null
-            if (hasInput) {
-                MessageLog.add("[POLL] 当前在群聊页，按Back回到消息列表")
-                service.performGlobalAction(AccessibilityService.GLOBAL_ACTION_BACK)
-                root.recycle()
-                scheduleNext()
-                return
-            } else {
-                // 不在群聊页，也不在消息列表页（可能是通讯录/工作台/邮件等），切回消息列表
-                MessageLog.add("[POLL] 当前不在消息列表/群聊页，尝试点击'消息'Tab")
-                navigateToMessageTab(root)
-                root.recycle()
+        try {
+            val root = findWeWorkRoot()
+            if (root == null) {
+                MessageLog.add("[POLL] WeWork window not found，尝试启动企业微信")
+                launchWeWork()
+                // vivo 启动较慢，临时延长轮询间隔，等应用真正出现
+                currentInterval = 5000L
                 scheduleNext()
                 return
             }
-        }
 
-        try {
-            val hasNewMessage = scanMessageList(root)
-            if (config.adaptivePoll) {
-                if (hasNewMessage) {
-                    currentInterval = 2000L
-                    consecutiveIdle = 0
+            // 如果当前在群聊页（有输入框但无RecyclerView），先按Back回到消息列表
+            val recyclerViewNodes = root.findAccessibilityNodeInfosByViewId(ID_RECYCLER_VIEW)
+            val hasRecycler = recyclerViewNodes.isNotEmpty()
+            recyclerViewNodes.forEach { it.recycle() }
+
+            if (!hasRecycler) {
+                val hasInput = findInputField(root) != null
+                root.recycle()
+                if (hasInput) {
+                    MessageLog.add("[POLL] 当前在群聊页，尝试点击左上角返回按钮")
+                    val backRoot = findWeWorkRoot()
+                    val returned = if (backRoot != null) {
+                        val ok = clickBackButton(backRoot)
+                        backRoot.recycle()
+                        ok
+                    } else false
+                    if (!returned) {
+                        MessageLog.add("[POLL] 返回按钮未找到，尝试按Back")
+                        service.performGlobalAction(AccessibilityService.GLOBAL_ACTION_BACK)
+                    }
                 } else {
-                    consecutiveIdle++
-                    if (consecutiveIdle >= 3) {
-                        currentInterval = 5000L
-                    } else {
-                        currentInterval = config.pollInterval.toLong().coerceAtLeast(500L)
+                    // 不在群聊页，也不在消息列表页（可能是通讯录/工作台/邮件等），切回消息列表
+                    MessageLog.add("[POLL] 当前不在消息列表/群聊页，尝试点击'消息'Tab")
+                    val navigated = navigateToMessageTabAcrossWindows()
+                    if (!navigated) {
+                        MessageLog.add("[POLL] 点击'消息'Tab失败")
                     }
                 }
+                scheduleNext()
+                return
             }
-        } finally {
-            root.recycle()
+
+            try {
+                val hasNewMessage = scanMessageList(root)
+                if (config.adaptivePoll) {
+                    if (hasNewMessage) {
+                        currentInterval = 2000L
+                        consecutiveIdle = 0
+                    } else {
+                        consecutiveIdle++
+                        if (consecutiveIdle >= 3) {
+                            currentInterval = 5000L
+                        } else {
+                            currentInterval = config.pollInterval.toLong().coerceAtLeast(500L)
+                        }
+                    }
+                }
+            } finally {
+                root.recycle()
+            }
+        } catch (e: Exception) {
+            MessageLog.add("[POLL] doPoll exception: ${e.javaClass.simpleName}: ${e.message}")
         }
         scheduleNext()
     }
@@ -226,6 +271,8 @@ class UIPollingCollector(
                 listSnapshot.clear()
                 listSnapshot.putAll(currentSnapshot)
             }
+        } catch (e: Exception) {
+            MessageLog.add("[POLL] scanMessageList exception: ${e.javaClass.simpleName}: ${e.message}")
         } finally {
             nodesToRecycle.forEach { it.recycle() }
             recyclerView.recycle()
@@ -323,32 +370,39 @@ class UIPollingCollector(
         root.recycle()
 
         // Step 2: wait for chat detail page with retry
-        var retries = 6
+        // vivo 系统 Activity 启动慢，需要更长的等待时间和更多重试
+        var retries = 12
         val checkRunnable = object : Runnable {
             override fun run() {
-                val chatRoot = findWeWorkRoot()
+                MessageLog.add("[POLL] checkRunnable: retries left=$retries, finding WeWork root...")
+                // 页面切换期间必须跳过缓存，否则可能拿到旧窗口（消息列表页而非聊天页）
+                val chatRoot = findWeWorkRoot(skipCache = true)
                 if (chatRoot == null) {
+                    MessageLog.add("[POLL] checkRunnable: findWeWorkRoot returned null")
                     if (retries > 0) {
                         retries--
-                        handler.postDelayed(this, 600)
+                        handler.postDelayed(this, 1200)
                         return
                     }
-                    MessageLog.add("[POLL] readChatDetail: chat root not found after retries")
-                    UiController.release()
+                    MessageLog.add("[POLL] readChatDetail: chat root not found after retries, abort")
+                    ensureBackToMessageListThenRelease()
                     return
                 }
+                MessageLog.add("[POLL] checkRunnable: found chatRoot pkg=${chatRoot.packageName} children=${chatRoot.childCount}")
 
                 val inChat = isInChatScreen(chatRoot, groupName)
+                MessageLog.add("[POLL] checkRunnable: isInChatScreen=$inChat")
                 if (!inChat) {
                     if (retries > 0) {
                         retries--
                         chatRoot.recycle()
-                        handler.postDelayed(this, 600)
+                        MessageLog.add("[POLL] checkRunnable: not in chat yet, will retry")
+                        handler.postDelayed(this, 1200)
                         return
                     }
                     MessageLog.add("[POLL] readChatDetail: not in chat screen after retries, abort")
                     chatRoot.recycle()
-                    UiController.release()
+                    ensureBackToMessageListThenRelease()
                     return
                 }
 
@@ -360,56 +414,51 @@ class UIPollingCollector(
                 }
                 chatRoot.recycle()
 
-                // Step 5: return to message list with verification
+                // Step 5: return to message list
+                // vivo 上按 Back 可能直接退出企业微信回到桌面。
+                // 群聊页没有底部"消息"Tab，正确方式是点击左上角返回按钮。
                 handler.postDelayed({
-                    service.performGlobalAction(AccessibilityService.GLOBAL_ACTION_BACK)
-                    MessageLog.add("[POLL] readChatDetail: performed back action")
-
-                    // 检测是否真正回到了消息列表，如果没有则再按一次或点消息Tab
-                    handler.postDelayed({
-                        val verifyRoot = findWeWorkRoot()
-                        if (verifyRoot != null) {
-                            val hasRecycler = verifyRoot.findAccessibilityNodeInfosByViewId(ID_RECYCLER_VIEW).isNotEmpty()
-                            verifyRoot.recycle()
-                            if (!hasRecycler) {
-                                MessageLog.add("[POLL] Back后未回到消息列表，再按一次Back")
-                                service.performGlobalAction(AccessibilityService.GLOBAL_ACTION_BACK)
-                                handler.postDelayed({
-                                    val finalRoot = findWeWorkRoot()
-                                    if (finalRoot != null) {
-                                        val stillNoRecycler = finalRoot.findAccessibilityNodeInfosByViewId(ID_RECYCLER_VIEW).isEmpty()
-                                        finalRoot.recycle()
-                                        if (stillNoRecycler) {
-                                            MessageLog.add("[POLL] 两次Back无效，尝试点击'消息'Tab")
-                                            val tabRoot = findWeWorkRoot()
-                                            if (tabRoot != null) {
-                                                navigateToMessageTab(tabRoot)
-                                                tabRoot.recycle()
-                                            }
-                                        }
-                                    }
-                                    UiController.release()
-                                }, 800)
-                                return@postDelayed
-                            }
-                        }
-                        UiController.release()
-                    }, 800)
-                }, 1500)
+                    var returned = false
+                    val backRoot = findWeWorkRoot()
+                    if (backRoot != null) {
+                        returned = clickBackButton(backRoot)
+                        backRoot.recycle()
+                    }
+                    if (!returned) {
+                        MessageLog.add("[POLL] readChatDetail: 左上角返回按钮未找到，尝试按Back")
+                        service.performGlobalAction(AccessibilityService.GLOBAL_ACTION_BACK)
+                    }
+                    UiController.release()
+                }, 1200)
             }
         }
-        handler.postDelayed(checkRunnable, 600)
+        // vivo 首次延迟更长，给系统 Instrumentation 完成时间
+        handler.postDelayed(checkRunnable, 1500)
     }
 
     private fun isInChatScreen(root: AccessibilityNodeInfo, groupName: String): Boolean {
         val titleNodes = root.findAccessibilityNodeInfosByText(groupName)
-        val hasTitle = titleNodes.any {
+        val rootRect = android.graphics.Rect()
+        root.getBoundsInScreen(rootRect)
+        val titleMaxY = (rootRect.top + rootRect.height() * 0.15).toInt()
+
+        val titleMatch = titleNodes.find {
             val t = it.text?.toString() ?: ""
-            t.contains(groupName) && !isNodeInRecyclerView(it)
+            if (!t.contains(groupName)) return@find false
+            val nodeRect = android.graphics.Rect()
+            it.getBoundsInScreen(nodeRect)
+            // 标题栏一定在屏幕顶部 15% 区域内；消息列表项在中部，会被过滤
+            nodeRect.centerY() <= titleMaxY
         }
+        val hasTitle = titleMatch != null
+        val matchedTitle = titleMatch?.text?.toString() ?: ""
         titleNodes.forEach { it.recycle() }
 
-        val hasInput = findInputField(root) != null
+        val inputNode = findInputField(root)
+        val hasInput = inputNode != null
+        inputNode?.recycle()
+
+        MessageLog.add("[POLL] isInChatScreen: titleNodes=${titleNodes.size} hasTitle=$hasTitle matchedTitle='$matchedTitle' hasInput=$hasInput titleMaxY=$titleMaxY")
         return hasTitle && hasInput
     }
 
@@ -433,7 +482,15 @@ class UIPollingCollector(
         return found
     }
 
+    /**
+     * 查找群聊页输入框。
+     * vivo 版本 hint 为 "发消息或按住..."（resource-id: i_6，class: EditText）。
+     * 由于 findAccessibilityNodeInfosByText 是包含匹配，"发消息" 理论上可匹配到
+     * "发消息或按住..."，但此处使用精确匹配（== hint），故需配合 EditText fallback。
+     */
     private fun findInputField(root: AccessibilityNodeInfo): AccessibilityNodeInfo? {
+        // 旧版本 hint: "发消息" / "添加消息内容" / "输入消息" / "请输入消息"
+        // vivo 版本 hint: "发消息或按住..."
         val hints = listOf("发消息", "添加消息内容", "输入消息", "请输入消息")
         for (hint in hints) {
             val nodes = root.findAccessibilityNodeInfosByText(hint)
@@ -613,72 +670,205 @@ class UIPollingCollector(
         return emptyList()
     }
 
+    /**
+     * 点击群聊页左上角的返回按钮（resource-id: nc9）。
+     * vivo 群聊页没有底部"消息"Tab，返回消息列表的正确方式是点左上角返回。
+     */
+    private fun clickBackButton(root: AccessibilityNodeInfo): Boolean {
+        val backNodes = root.findAccessibilityNodeInfosByViewId("com.tencent.wework:id/nc9")
+        val backBtn = backNodes.firstOrNull()
+        if (backBtn != null && backBtn.isClickable) {
+            val result = backBtn.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+            MessageLog.add("[POLL] 点击左上角返回按钮: $result")
+            backNodes.forEach { if (it !== backBtn) it.recycle() }
+            backBtn.recycle()
+            return result
+        }
+        backNodes.forEach { it.recycle() }
+        return false
+    }
+
+    /**
+     * 在所有企业微信窗口中搜索并点击底部"消息"Tab。
+     * vivo 上聊天页窗口和消息列表页可能是不同窗口，需遍历 windows。
+     */
+    private fun navigateToMessageTabAcrossWindows(): Boolean {
+        val windows = service.windows
+        for (window in windows) {
+            val root = window.root ?: continue
+            if (root.packageName?.toString() != PACKAGE_WEWORK) {
+                root.recycle()
+                continue
+            }
+            val clicked = navigateToMessageTab(root)
+            root.recycle()
+            if (clicked) return true
+        }
+        return false
+    }
+
     private fun navigateToMessageTab(root: AccessibilityNodeInfo): Boolean {
         val rootRect = android.graphics.Rect()
         root.getBoundsInScreen(rootRect)
         val minTop = (rootRect.top + rootRect.height() * 0.85).toInt()
 
         // 企业微信底部 Tab 栏：TextView 本身不是 clickable 的，父容器才是。
-        // 先通过文字找到底部区域的"消息"节点，再向上找 clickable 父节点点击。
+        // vivo 上底部 Tab 文字节点 bounds 可能为 [0,0][0,0]，需向上找 clickable 父节点
+        // 再用父节点的 bounds 判断是否在底部区域。
         val msgNodes = root.findAccessibilityNodeInfosByText("消息")
         var clicked = false
         for (node in msgNodes) {
-            val nodeRect = android.graphics.Rect()
-            node.getBoundsInScreen(nodeRect)
-            if (nodeRect.top < minTop) {
-                node.recycle()
-                continue // 不在底部 Tab 区域，跳过
-            }
-
+            // 先向上找 clickable 父节点
+            var clickableNode: AccessibilityNodeInfo? = null
             var current: AccessibilityNodeInfo? = node
             var depth = 0
             while (current != null && depth < 5) {
                 if (current.isClickable) {
-                    val result = current.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-                    MessageLog.add("[POLL] 点击'消息'Tab: $result")
-                    clicked = true
+                    clickableNode = current
                     break
                 }
-                val parent = current.parent
-                if (parent != null && current !== node) {
-                    current.recycle()
-                }
-                current = parent
+                current = current.parent
                 depth++
             }
-            if (current != null && current !== node && !clicked) {
-                current.recycle()
+
+            if (clickableNode == null) {
+                node.recycle()
+                continue
             }
+
+            // 用 clickable 父节点的 bounds 判断是否在底部 Tab 区域
+            val clickRect = android.graphics.Rect()
+            clickableNode.getBoundsInScreen(clickRect)
+            if (clickRect.top < minTop) {
+                if (clickableNode !== node) clickableNode.recycle()
+                node.recycle()
+                continue // 不在底部 Tab 区域，跳过
+            }
+
+            val result = clickableNode.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+            MessageLog.add("[POLL] 点击'消息'Tab: $result")
+            clicked = true
+            if (clickableNode !== node) clickableNode.recycle()
             node.recycle()
             if (clicked) break
         }
         return clicked
     }
 
-    private fun findWeWorkRoot(): AccessibilityNodeInfo? {
+    /**
+     * @param skipCache 页面切换期间（如 readChatDetail 的 checkRunnable）应设为 true，
+     *                  避免 WeWorkAccessibilityService.latestWeWorkRoot 缓存未及时更新导致拿到旧窗口。
+     */
+    private fun findWeWorkRoot(skipCache: Boolean = false): AccessibilityNodeInfo? {
+        // vivo 系统 rootInActiveWindow / windows 经常返回 null 或错误窗口。
+        // 优先使用 WeWorkAccessibilityService 通过事件缓存的最新根节点，
+        // 其次尝试 rootInActiveWindow，最后遍历所有窗口。
+        // 关键：必须验证窗口包含主内容特征（RecyclerView 或输入框），
+        // 避免选中 vivo 企业微信的侧边栏窗口（resource-id: ix_）。
+        if (!skipCache) {
+            val cached = WeWorkAccessibilityService.latestWeWorkRoot
+            if (cached != null && cached.packageName?.toString() == PACKAGE_WEWORK) {
+                val hasMain = hasMainContent(cached)
+                if (hasMain) {
+                    MessageLog.add("[POLL] findWeWorkRoot: using cached root")
+                    return AccessibilityNodeInfo.obtain(cached)
+                }
+            }
+        }
+
+        val activeRoot = service.rootInActiveWindow
+        if (activeRoot != null) {
+            val pkg = activeRoot.packageName?.toString()
+            if (pkg == PACKAGE_WEWORK && hasMainContent(activeRoot)) {
+                MessageLog.add("[POLL] findWeWorkRoot: using rootInActiveWindow")
+                return activeRoot
+            } else {
+                activeRoot.recycle()
+            }
+        }
+
         val windows = service.windows
         val fetchedRoots = mutableListOf<AccessibilityNodeInfo>()
         var bestRoot: AccessibilityNodeInfo? = null
         var bestChildCount = 0
+        var weWorkWindowCount = 0
         try {
-            // 选择 childCount 最大的企业微信窗口（通常是主窗口）
             for (window in windows) {
                 val root = window.root ?: continue
                 fetchedRoots.add(root)
-                if (root.packageName?.toString() == PACKAGE_WEWORK && root.childCount > bestChildCount) {
-                    bestRoot = root
-                    bestChildCount = root.childCount
+                if (root.packageName?.toString() == PACKAGE_WEWORK) {
+                    weWorkWindowCount++
+                    val recyclerNodes = root.findAccessibilityNodeInfosByViewId(ID_RECYCLER_VIEW)
+                    val hasMainRecycler = recyclerNodes.isNotEmpty()
+                    recyclerNodes.forEach { it.recycle() }
+                    if (hasMainRecycler) {
+                        bestRoot = root
+                        bestChildCount = Int.MAX_VALUE
+                    } else if (root.childCount > bestChildCount) {
+                        bestRoot = root
+                        bestChildCount = root.childCount
+                    }
                 }
             }
-            if (bestRoot == null) {
-                bestRoot = service.rootInActiveWindow
-                if (bestRoot != null) fetchedRoots.add(bestRoot)
-            }
             fetchedRoots.remove(bestRoot)
+            MessageLog.add("[POLL] findWeWorkRoot: windows=${windows.size} weWorkWindows=$weWorkWindowCount bestRoot=${bestRoot != null} childCount=$bestChildCount")
             return bestRoot
         } finally {
             fetchedRoots.forEach { it.recycle() }
         }
+    }
+
+    /**
+     * 判断窗口是否包含企业微信主内容区特征（消息列表 RecyclerView 或聊天页输入框）。
+     * vivo 版企业微信有左侧边栏窗口，需要过滤掉。
+     */
+    private fun hasMainContent(root: AccessibilityNodeInfo): Boolean {
+        val recyclerNodes = root.findAccessibilityNodeInfosByViewId(ID_RECYCLER_VIEW)
+        val hasRecycler = recyclerNodes.isNotEmpty()
+        recyclerNodes.forEach { it.recycle() }
+        if (hasRecycler) return true
+
+        val inputNode = findInputField(root)
+        val hasInput = inputNode != null
+        inputNode?.recycle()
+        return hasInput
+    }
+
+    /**
+     * readChatDetail 失败后的安全归位：确保回到消息列表再释放 UI-LOCK。
+     */
+    private fun ensureBackToMessageListThenRelease() {
+        MessageLog.add("[POLL] ensureBackToMessageList: 开始归位")
+        service.performGlobalAction(AccessibilityService.GLOBAL_ACTION_BACK)
+        handler.postDelayed({
+            val verifyRoot = findWeWorkRoot()
+            if (verifyRoot != null) {
+                val hasRecycler = verifyRoot.findAccessibilityNodeInfosByViewId(ID_RECYCLER_VIEW).isNotEmpty()
+                verifyRoot.recycle()
+                if (!hasRecycler) {
+                    MessageLog.add("[POLL] ensureBackToMessageList: Back后未回到消息列表，再按一次")
+                    service.performGlobalAction(AccessibilityService.GLOBAL_ACTION_BACK)
+                    handler.postDelayed({
+                        val finalRoot = findWeWorkRoot()
+                        if (finalRoot != null) {
+                            val stillNoRecycler = finalRoot.findAccessibilityNodeInfosByViewId(ID_RECYCLER_VIEW).isEmpty()
+                            finalRoot.recycle()
+                            if (stillNoRecycler) {
+                                MessageLog.add("[POLL] ensureBackToMessageList: 两次Back无效，尝试点击'消息'Tab")
+                                val tabRoot = findWeWorkRoot()
+                                if (tabRoot != null) {
+                                    navigateToMessageTab(tabRoot)
+                                    tabRoot.recycle()
+                                }
+                            }
+                        }
+                        UiController.release()
+                    }, 800)
+                    return@postDelayed
+                }
+            }
+            UiController.release()
+        }, 800)
     }
 
     private fun launchWeWork() {

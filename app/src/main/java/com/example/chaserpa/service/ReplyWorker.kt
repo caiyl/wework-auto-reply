@@ -114,13 +114,16 @@ class ReplyWorker(
                     if (response.isSuccessful) {
                         val body = response.body?.string()
                         if (!body.isNullOrBlank()) {
+                            MessageLog.add("[REPLY-WORKER] 收到响应: ${body.take(200)}")
                             val replies = parseReplies(body)
                             if (replies.isNotEmpty()) {
                                 ReplyQueue.enqueueBatch(replies)
                                 MessageLog.add("[REPLY-WORKER] 从后台拉取 ${replies.size} 条待回复")
                             } else {
-                                MessageLog.add("[REPLY-WORKER] 后台无待回复消息")
+                                MessageLog.add("[REPLY-WORKER] 后台无待回复消息 (replies=0)")
                             }
+                        } else {
+                            MessageLog.add("[REPLY-WORKER] 后台返回空 body")
                         }
                     } else {
                         MessageLog.add("[REPLY-WORKER] 拉取失败，HTTP ${response.code}")

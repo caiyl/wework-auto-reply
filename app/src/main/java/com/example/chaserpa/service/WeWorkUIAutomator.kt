@@ -18,22 +18,40 @@ class WeWorkUIAutomator(private val service: AccessibilityService) {
 
     private val handler = Handler(Looper.getMainLooper())
 
+    /**
+     * 获取企业微信的主窗口。
+     * vivo 版企业微信有左侧边栏窗口（ix_），会作为独立窗口出现。
+     * 优先选择包含消息列表 RecyclerView（czp）或输入框特征的主窗口，
+     * 避免选中侧边栏导致 UI 操作失败。
+     */
     private fun findWeWorkWindow(): AccessibilityNodeInfo? {
         val windows = service.windows
         MessageLog.add("[AUTO] findWeWorkWindow: windows=${windows.size}")
-        var bestRoot: AccessibilityNodeInfo? = null
-        var bestChildCount = 0
+        var chatRoot: AccessibilityNodeInfo? = null
+        var listRoot: AccessibilityNodeInfo? = null
         for (window in windows) {
             val root = window.root
             val pkg = root?.packageName?.toString()
             MessageLog.add("[AUTO]   window pkg=$pkg children=${root?.childCount}")
-            if (pkg == PACKAGE_WEWORK && root != null && root.childCount > bestChildCount) {
-                bestRoot = root
-                bestChildCount = root.childCount
+            if (pkg == PACKAGE_WEWORK && root != null) {
+                // 群聊页窗口优先（有输入框），其次消息列表页窗口（有 RecyclerView）。
+                // 不能只看 childCount，否则容易选中侧栏或错误窗口。
+                val hasInput = findInputField(root) != null
+                val hasRecycler = root.findAccessibilityNodeInfosByViewId("com.tencent.wework:id/czp").isNotEmpty()
+                if (hasInput && chatRoot == null) {
+                    chatRoot = root
+                } else if (hasRecycler && listRoot == null) {
+                    listRoot = root
+                }
             }
         }
-        if (bestRoot != null) {
-            return bestRoot
+        if (chatRoot != null) {
+            MessageLog.add("[AUTO]   select chat root (has input)")
+            return chatRoot
+        }
+        if (listRoot != null) {
+            MessageLog.add("[AUTO]   select message list root (has recycler)")
+            return listRoot
         }
         val active = service.rootInActiveWindow
         MessageLog.add("[AUTO]   rootInActiveWindow pkg=${active?.packageName} children=${active?.childCount}")
@@ -144,7 +162,7 @@ class WeWorkUIAutomator(private val service: AccessibilityService) {
             }
 
             // 检查是否在消息列表页——如果是，直接遍历点击群聊项
-            val recyclerNodes = rootNode.findAccessibilityNodeInfosByViewId("com.tencent.wework:id/cxl")
+            val recyclerNodes = rootNode.findAccessibilityNodeInfosByViewId("com.tencent.wework:id/czp")
             if (recyclerNodes.isNotEmpty()) {
                 MessageLog.add("[AUTO] 当前在消息列表页，尝试直接点击群聊项")
                 val recycler = recyclerNodes.firstOrNull()
@@ -152,7 +170,7 @@ class WeWorkUIAutomator(private val service: AccessibilityService) {
                 if (recycler != null) {
                     for (i in 0 until minOf(recycler.childCount, 10)) {
                         val item = recycler.getChild(i) ?: continue
-                        val nameNodes = item.findAccessibilityNodeInfosByViewId("com.tencent.wework:id/hrm")
+                        val nameNodes = item.findAccessibilityNodeInfosByViewId("com.tencent.wework:id/hrr")
                         val name = nameNodes.firstOrNull()?.text?.toString()
                         if (name == groupName) {
                             var current: AccessibilityNodeInfo? = item
@@ -222,7 +240,7 @@ class WeWorkUIAutomator(private val service: AccessibilityService) {
         }
         titleNodes.forEach { it.recycle() }
 
-        val recyclerNodes = root.findAccessibilityNodeInfosByViewId("com.tencent.wework:id/cxl")
+        val recyclerNodes = root.findAccessibilityNodeInfosByViewId("com.tencent.wework:id/czp")
         val hasRecycler = recyclerNodes.isNotEmpty()
         recyclerNodes.forEach { it.recycle() }
 
@@ -340,37 +358,40 @@ class WeWorkUIAutomator(private val service: AccessibilityService) {
         root.getBoundsInScreen(rootRect)
         val minTop = (rootRect.top + rootRect.height() * 0.85).toInt()
 
-        // 企业微信底部 Tab 栏：TextView 本身不是 clickable 的，父容器才是。
-        // 先通过文字找到底部区域的"消息"节点，再向上找 clickable 父节点点击。
+        // vivo 上底部 Tab 文字节点 bounds 可能为 [0,0][0,0]，需向上找 clickable 父节点
+        // 再用父节点的 bounds 判断是否在底部区域。
         val msgNodes = root.findAccessibilityNodeInfosByText("消息")
         var clicked = false
         for (node in msgNodes) {
-            val nodeRect = android.graphics.Rect()
-            node.getBoundsInScreen(nodeRect)
-            if (nodeRect.top < minTop) {
-                node.recycle()
-                continue // 不在底部 Tab 区域，跳过
-            }
-
+            var clickableNode: AccessibilityNodeInfo? = null
             var current: AccessibilityNodeInfo? = node
             var depth = 0
             while (current != null && depth < 5) {
                 if (current.isClickable) {
-                    val result = current.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-                    MessageLog.add("[AUTO] 点击'消息'Tab: $result")
-                    clicked = true
+                    clickableNode = current
                     break
                 }
-                val parent = current.parent
-                if (parent != null && current !== node) {
-                    current.recycle()
-                }
-                current = parent
+                current = current.parent
                 depth++
             }
-            if (current != null && current !== node && !clicked) {
-                current.recycle()
+
+            if (clickableNode == null) {
+                node.recycle()
+                continue
             }
+
+            val clickRect = android.graphics.Rect()
+            clickableNode.getBoundsInScreen(clickRect)
+            if (clickRect.top < minTop) {
+                if (clickableNode !== node) clickableNode.recycle()
+                node.recycle()
+                continue
+            }
+
+            val result = clickableNode.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+            MessageLog.add("[AUTO] 点击'消息'Tab: $result")
+            clicked = true
+            if (clickableNode !== node) clickableNode.recycle()
             node.recycle()
             if (clicked) break
         }
@@ -572,19 +593,32 @@ class WeWorkUIAutomator(private val service: AccessibilityService) {
 
     private fun isInChatScreen(root: AccessibilityNodeInfo, groupName: String): Boolean {
         val titleNodes = root.findAccessibilityNodeInfosByText(groupName)
-        // 企业微信标题可能显示 "群名(人数)"，用 contains 匹配
-        // 但必须排除 RecyclerView 中的节点（消息列表项），只匹配顶部标题栏
+        val rootRect = android.graphics.Rect()
+        root.getBoundsInScreen(rootRect)
+        val titleMaxY = (rootRect.top + rootRect.height() * 0.15).toInt()
+
+        // vivo 版本标题栏节点可能嵌套在 RecyclerView 中，不能用 isNodeInRecyclerView 过滤。
+        // 改用屏幕位置判断：标题栏一定在屏幕顶部 15% 区域内。
         val hasTitleByText = titleNodes.any {
             val t = it.text?.toString() ?: ""
-            t.contains(groupName) && !isNodeInRecyclerView(it)
+            if (!t.contains(groupName)) return@any false
+            val nodeRect = android.graphics.Rect()
+            it.getBoundsInScreen(nodeRect)
+            nodeRect.centerY() <= titleMaxY
         }
         val hasTitleByDesc = titleNodes.any {
             val d = it.contentDescription?.toString() ?: ""
-            d.contains(groupName) && !isNodeInRecyclerView(it)
+            if (!d.contains(groupName)) return@any false
+            val nodeRect = android.graphics.Rect()
+            it.getBoundsInScreen(nodeRect)
+            nodeRect.centerY() <= titleMaxY
         }
         val hasTitle = hasTitleByText || hasTitleByDesc
-        val hasInput = findInputField(root) != null
-        MessageLog.add("[AUTO] isInChatScreen: hasTitle=$hasTitle hasInput=$hasInput")
+        val inputNode = findInputField(root)
+        val hasInput = inputNode != null
+        inputNode?.recycle()
+        MessageLog.add("[AUTO] isInChatScreen: hasTitle=$hasTitle hasInput=$hasInput titleMaxY=$titleMaxY")
+        titleNodes.forEach { it.recycle() }
         return hasTitle && hasInput
     }
 
@@ -604,45 +638,102 @@ class WeWorkUIAutomator(private val service: AccessibilityService) {
     }
 
     /**
-     * 发送消息后，确保回到消息列表页。递归检测+Back，最多3次，失败则 emergencyRecover。
+     * 发送消息后，确保回到消息列表页。
+     * vivo 群聊页没有底部"消息"Tab，正确方式是点击左上角返回按钮。
      */
     private fun ensureBackToMessageList(attempt: Int) {
         if (attempt > 3) {
-            MessageLog.add("[AUTO] 3次Back后仍在群聊页，触发紧急恢复")
+            MessageLog.add("[AUTO] 3次尝试后仍未回到消息列表，触发紧急恢复")
             emergencyRecover()
             return
         }
+
+        // 先尝试点击左上角返回按钮
+        val root = findWeWorkWindow()
+        if (root != null) {
+            val clicked = clickBackButton(root)
+            root.recycle()
+            if (clicked) {
+                MessageLog.add("[AUTO] 已点击左上角返回按钮")
+                handler.postDelayed({
+                    val verifyRoot = findWeWorkWindow()
+                    if (verifyRoot != null) {
+                        val page = detectCurrentPage(verifyRoot)
+                        verifyRoot.recycle()
+                        if (page == PageType.MESSAGE_LIST) {
+                            MessageLog.add("[AUTO] 已回到消息列表页")
+                        } else if (page == PageType.CHAT) {
+                            ensureBackToMessageList(attempt + 1)
+                        } else {
+                            navigateToMessageTabAcrossWindows()
+                        }
+                    }
+                }, 1200)
+                return
+            }
+        }
+
+        // fallback 到按 Back
+        MessageLog.add("[AUTO] 返回按钮未找到，第${attempt}次按Back")
         service.performGlobalAction(AccessibilityService.GLOBAL_ACTION_BACK)
-        MessageLog.add("[AUTO] 第${attempt}次按Back")
 
         handler.postDelayed({
-            val root = findWeWorkWindow()
-            if (root == null) {
+            val verifyRoot = findWeWorkWindow()
+            if (verifyRoot == null) {
                 MessageLog.add("[AUTO] Back后窗口丢失，触发紧急恢复")
                 emergencyRecover()
                 return@postDelayed
             }
-            val page = detectCurrentPage(root)
-            root.recycle()
+            val page = detectCurrentPage(verifyRoot)
+            verifyRoot.recycle()
             when (page) {
                 PageType.MESSAGE_LIST -> {
                     MessageLog.add("[AUTO] 已回到消息列表页")
                 }
                 PageType.CHAT -> {
-                    // 还在群聊页，继续按Back
                     ensureBackToMessageList(attempt + 1)
                 }
                 else -> {
-                    // 误入通讯录/工作台/邮件等页面，直接点"消息"Tab
-                    MessageLog.add("[AUTO] Back后进入$page，点击'消息'Tab切回")
-                    val root2 = findWeWorkWindow()
-                    if (root2 != null) {
-                        navigateToMessageTab(root2)
-                        root2.recycle()
-                    }
+                    MessageLog.add("[AUTO] Back后进入$page，尝试点击'消息'Tab切回")
+                    navigateToMessageTabAcrossWindows()
                 }
             }
         }, 800)
+    }
+
+    /**
+     * 点击群聊页左上角的返回按钮（resource-id: nc9）。
+     */
+    private fun clickBackButton(root: AccessibilityNodeInfo): Boolean {
+        val backNodes = root.findAccessibilityNodeInfosByViewId("com.tencent.wework:id/nc9")
+        val backBtn = backNodes.firstOrNull()
+        if (backBtn != null && backBtn.isClickable) {
+            val result = backBtn.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+            MessageLog.add("[AUTO] 点击左上角返回按钮: $result")
+            backNodes.forEach { if (it !== backBtn) it.recycle() }
+            backBtn.recycle()
+            return result
+        }
+        backNodes.forEach { it.recycle() }
+        return false
+    }
+
+    /**
+     * 在所有企业微信窗口中搜索并点击底部"消息"Tab。
+     */
+    private fun navigateToMessageTabAcrossWindows(): Boolean {
+        val windows = service.windows
+        for (window in windows) {
+            val root = window.root ?: continue
+            if (root.packageName?.toString() != PACKAGE_WEWORK) {
+                root.recycle()
+                continue
+            }
+            val clicked = navigateToMessageTab(root)
+            root.recycle()
+            if (clicked) return true
+        }
+        return false
     }
 
 //     private fun findGroupBySearch(groupName: String, replyText: String) {
@@ -881,7 +972,13 @@ class WeWorkUIAutomator(private val service: AccessibilityService) {
 //         return null
 //     }
 // 
+    /**
+     * 查找群聊页输入框。
+     * vivo 版本 hint 为 "发消息或按住..."（resource-id: i_6，class: EditText）。
+     */
     private fun findInputField(root: AccessibilityNodeInfo): AccessibilityNodeInfo? {
+        // 旧版本 hint: "发消息" / "添加消息内容" / "输入消息" / "请输入消息"
+        // vivo 版本 hint: "发消息或按住..."
         val hints = listOf("发消息", "添加消息内容", "输入消息", "请输入消息")
         for (hint in hints) {
             val nodes = root.findAccessibilityNodeInfosByText(hint)
@@ -1058,7 +1155,9 @@ class WeWorkUIAutomator(private val service: AccessibilityService) {
         val nodeRect = android.graphics.Rect()
 
         // 0. 通过 resource-id 匹配（最稳定，优先）
-        val byId = root.findAccessibilityNodeInfosByViewId("com.tencent.wework:id/i9c")
+        // vivo 版本企业微信发送按钮 ID: i_2（class=Button, text="发送", clickable=true）
+        // 注：仅在输入框有文字时才显示，空输入框时该节点不存在
+        val byId = root.findAccessibilityNodeInfosByViewId("com.tencent.wework:id/i_2")
         val idMatch = byId.firstOrNull()
         if (idMatch != null && idMatch.isClickable) {
             idMatch.getBoundsInScreen(nodeRect)

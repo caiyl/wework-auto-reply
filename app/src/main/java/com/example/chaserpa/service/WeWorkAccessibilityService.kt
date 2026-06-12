@@ -3,6 +3,7 @@ package com.example.chaserpa.service
 import android.accessibilityservice.AccessibilityService
 import android.util.Log
 import android.view.accessibility.AccessibilityEvent
+import android.view.accessibility.AccessibilityNodeInfo
 import com.example.chaserpa.data.ConfigRepository
 
 class WeWorkAccessibilityService : AccessibilityService() {
@@ -16,6 +17,13 @@ class WeWorkAccessibilityService : AccessibilityService() {
         @Volatile
         var instance: WeWorkAccessibilityService? = null
             private set
+
+        /**
+         * vivo 系统 rootInActiveWindow / windows 经常返回 null 或错误窗口，
+         * 改为通过无障碍事件缓存企业微信最新的根节点，供轮询直接使用。
+         */
+        @Volatile
+        var latestWeWorkRoot: AccessibilityNodeInfo? = null
 
         /**
          * 外部调用（如 ConfigScreen 切换开关）来更新监控状态。
@@ -118,11 +126,14 @@ class WeWorkAccessibilityService : AccessibilityService() {
 
     private fun applyMonitoringState(enabled: Boolean) {
         monitoringEnabled = enabled
+        Log.i(TAG, "applyMonitoringState: enabled=$enabled, foreground=$isChaserpaForeground")
         if (enabled) {
             MessageLog.add("[SYS] 监控已开启")
             if (isChaserpaForeground) {
                 MessageLog.add("[SYS] 当前在配置页，Worker 暂不启动")
+                Log.i(TAG, "ChaserPA in foreground, workers not started")
             } else {
+                Log.i(TAG, "Starting all workers")
                 startAllWorkers()
             }
         } else {
@@ -132,6 +143,7 @@ class WeWorkAccessibilityService : AccessibilityService() {
     }
 
     private fun startAllWorkers() {
+        Log.i(TAG, "startAllWorkers: uiPolling=${uiPollingCollector != null}, reply=${replyWorker != null}, keepAlive=${keepAliveWorker != null}")
         uiPollingCollector?.start()
         replyWorker?.start()
         keepAliveWorker?.start()
@@ -146,9 +158,28 @@ class WeWorkAccessibilityService : AccessibilityService() {
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent) {
+        val pkg = event.packageName?.toString()
+
+        // 缓存企业微信最新的根节点（vivo 系统 rootInActiveWindow 不可靠）
+        if (pkg == "com.tencent.wework") {
+            val source = event.source
+            if (source != null) {
+                var root: AccessibilityNodeInfo? = source
+                while (root != null) {
+                    val parent = root.parent
+                    if (parent != null) {
+                        if (root !== source) root.recycle()
+                        root = parent
+                    } else {
+                        break
+                    }
+                }
+                latestWeWorkRoot = root
+            }
+        }
+
         // 监听 ChaserPA 自身前台状态，进入前台时暂停所有 Worker，离开时恢复
         if (event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
-            val pkg = event.packageName?.toString()
             val wasForeground = isChaserpaForeground
             isChaserpaForeground = (pkg == packageName)
             if (wasForeground && !isChaserpaForeground) {
