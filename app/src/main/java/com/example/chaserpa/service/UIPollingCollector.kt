@@ -149,6 +149,25 @@ class UIPollingCollector(
             scheduleNext()
             return
         }
+
+        // 微信诊断分支：先 dump 当前窗口 UI 树，帮助企业适配
+        if (chatPlatform.packageName == "com.tencent.mm") {
+            try {
+                val root = chatPlatform.findActiveChatRoot(service)
+                if (root != null) {
+                    MessageLog.add("[POLL] WeChat diagnostic root found, children=${root.childCount}")
+                    chatPlatform.extractMessages(root)
+                    root.recycle()
+                } else {
+                    MessageLog.add("[POLL] WeChat diagnostic root not found")
+                }
+            } catch (e: Exception) {
+                MessageLog.add("[POLL] WeChat diagnostic exception: ${e.javaClass.simpleName}: ${e.message}")
+            }
+            scheduleNext()
+            return
+        }
+
         try {
             val root = findWeWorkRoot()
             if (root == null) {
