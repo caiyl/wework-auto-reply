@@ -6,6 +6,7 @@
 
     <queries>
         <package android:name="com.tencent.wework" />
+        <package android:name="com.tencent.mm" />
     </queries>
 
     <application
@@ -29,7 +30,7 @@
             </intent-filter>
         </activity>
         <service
-            android:name=".service.WeWorkAccessibilityService"
+            android:name=".service.ChatAccessibilityService"
             android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE"
             android:exported="true">
             <intent-filter>

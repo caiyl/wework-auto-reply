@@ -24,6 +24,7 @@ import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -57,6 +58,7 @@ fun ConfigScreen() {
     }
     var autoReply by remember { mutableStateOf(configRepository.autoReply) }
     var myNickname by remember { mutableStateOf(configRepository.myNickname) }
+    var chatApp by remember { mutableStateOf(configRepository.chatApp) }
     var monitorMode by remember { mutableStateOf(configRepository.monitorMode) }
     var pollInterval by remember { mutableStateOf(configRepository.pollInterval) }
     var adaptivePoll by remember { mutableStateOf(configRepository.adaptivePoll) }
@@ -69,7 +71,7 @@ fun ConfigScreen() {
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("企业微信消息推送配置") }
+                title = { Text("消息推送配置") }
             )
         }
     ) { innerPadding ->
@@ -125,6 +127,41 @@ fun ConfigScreen() {
                         savedMessage = if (it) "监控已开启" else "监控已暂停"
                     }
                 )
+            }
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            Card(
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Text("监控平台", style = MaterialTheme.typography.titleMedium)
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(top = 8.dp),
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        ChatApp.entries.forEach { app ->
+                            FilterChip(
+                                selected = chatApp == app,
+                                onClick = {
+                                    chatApp = app
+                                    configRepository.chatApp = app
+                                    MessageLog.add("[CFG] 切换到: ${app.name}")
+                                    savedMessage = "已切换到 ${app.name}，重启无障碍服务后生效"
+                                },
+                                label = { Text(app.name) }
+                            )
+                        }
+                    }
+                    Text(
+                        text = "切换后请关闭并重新开启无障碍服务",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(top = 8.dp)
+                    )
+                }
             }
 
             Spacer(modifier = Modifier.height(16.dp))
