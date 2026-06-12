@@ -6,11 +6,11 @@ import android.view.accessibility.AccessibilityEvent
 
 class NotificationEventCollector(
     private val targetGroups: Set<String>,
-    private val onMessageCollected: (MessagePusher.WeWorkMessage) -> Unit
+    private val chatApp: ChatApp,
+    private val onMessageCollected: (ChatMessage) -> Unit
 ) {
     companion object {
         private const val TAG = "NotificationEventCollector"
-        private const val PACKAGE_WEWORK = "com.tencent.wework"
     }
 
     fun onAccessibilityEvent(event: AccessibilityEvent) {
@@ -24,7 +24,7 @@ class NotificationEventCollector(
         }
         MessageLog.add("[PKG] $pkg")
 
-        if (pkg != PACKAGE_WEWORK) {
+        if (pkg != chatApp.packageName) {
             return
         }
 
@@ -56,7 +56,7 @@ class NotificationEventCollector(
 
         MessageLog.add("[NOTIFY] group=$title, sender=$sender, content=$content")
         onMessageCollected(
-            MessagePusher.WeWorkMessage(
+            ChatMessage(
                 groupName = title,
                 sender = sender,
                 content = content

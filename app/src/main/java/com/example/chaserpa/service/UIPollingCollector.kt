@@ -13,13 +13,13 @@ import java.util.Locale
 class UIPollingCollector(
     private val service: AccessibilityService,
     private val config: ConfigRepository,
-    private val onMessage: (MessagePusher.WeWorkMessage) -> Unit,
+    private val chatPlatform: ChatPlatform,
+    private val onMessageCollected: (ChatMessage) -> Unit,
     private val autoReplyOrchestrator: AutoReplyOrchestrator? = null,
     private val myNickname: String = ""
 ) {
     companion object {
         private const val TAG = "UIPollingCollector"
-        private const val PACKAGE_WEWORK = "com.tencent.wework"
 
         // =================================================================
         // 以下为 vivo 手机企业微信版本的 view ID（通过 uiautomator dump 获取）
@@ -410,7 +410,7 @@ class UIPollingCollector(
                 val messages = extractChatMessages(chatRoot, groupName)
                 MessageLog.add("[POLL] readChatDetail: extracted ${messages.size} messages")
                 messages.forEach { msg ->
-                    onMessage(msg)
+                    onMessageCollected(msg)
                 }
                 chatRoot.recycle()
 
@@ -533,9 +533,9 @@ class UIPollingCollector(
     private fun extractChatMessages(
         root: AccessibilityNodeInfo,
         groupName: String
-    ): List<MessagePusher.WeWorkMessage> {
+    ): List<ChatMessage> {
         // Pair<消息, 该消息自己的时间气泡字符串>
-        val extracted = mutableListOf<Pair<MessagePusher.WeWorkMessage, String>>()
+        val extracted = mutableListOf<Pair<ChatMessage, String>>()
         val nodesToRecycle = mutableListOf<AccessibilityNodeInfo>()
 
         // 策略1: 尝试按消息气泡结构精确解析（ListView id=iis + 子项 RelativeLayout）
@@ -599,11 +599,11 @@ class UIPollingCollector(
                     val actualSender = nicknameParts.joinToString("")
 
                     extracted.add(
-                        MessagePusher.WeWorkMessage(
+                        ChatMessage(
                             groupName = groupName,
                             sender = actualSender,
                             content = content,
-                            timestamp = System.currentTimeMillis()
+                            time = bubbleTime
                         ) to bubbleTime
                     )
                 }
@@ -630,11 +630,11 @@ class UIPollingCollector(
                             continue
                         }
                         extracted.add(
-                            MessagePusher.WeWorkMessage(
+                            ChatMessage(
                                 groupName = groupName,
                                 sender = "UI采集",
                                 content = text,
-                                timestamp = System.currentTimeMillis()
+                                time = ""
                             ) to ""
                         )
                     }
@@ -696,7 +696,7 @@ class UIPollingCollector(
         val windows = service.windows
         for (window in windows) {
             val root = window.root ?: continue
-            if (root.packageName?.toString() != PACKAGE_WEWORK) {
+            if (root.packageName?.toString() != chatPlatform.packageName) {
                 root.recycle()
                 continue
             }
@@ -766,8 +766,8 @@ class UIPollingCollector(
         // 关键：必须验证窗口包含主内容特征（RecyclerView 或输入框），
         // 避免选中 vivo 企业微信的侧边栏窗口（resource-id: ix_）。
         if (!skipCache) {
-            val cached = WeWorkAccessibilityService.latestWeWorkRoot
-            if (cached != null && cached.packageName?.toString() == PACKAGE_WEWORK) {
+            val cached = ChatAccessibilityService.latestChatRoot
+            if (cached != null && cached.packageName?.toString() == chatPlatform.packageName) {
                 val hasMain = hasMainContent(cached)
                 if (hasMain) {
                     MessageLog.add("[POLL] findWeWorkRoot: using cached root")
@@ -779,7 +779,7 @@ class UIPollingCollector(
         val activeRoot = service.rootInActiveWindow
         if (activeRoot != null) {
             val pkg = activeRoot.packageName?.toString()
-            if (pkg == PACKAGE_WEWORK && hasMainContent(activeRoot)) {
+            if (pkg == chatPlatform.packageName && hasMainContent(activeRoot)) {
                 MessageLog.add("[POLL] findWeWorkRoot: using rootInActiveWindow")
                 return activeRoot
             } else {
@@ -796,7 +796,7 @@ class UIPollingCollector(
             for (window in windows) {
                 val root = window.root ?: continue
                 fetchedRoots.add(root)
-                if (root.packageName?.toString() == PACKAGE_WEWORK) {
+                if (root.packageName?.toString() == chatPlatform.packageName) {
                     weWorkWindowCount++
                     val recyclerNodes = root.findAccessibilityNodeInfosByViewId(ID_RECYCLER_VIEW)
                     val hasMainRecycler = recyclerNodes.isNotEmpty()
@@ -873,7 +873,7 @@ class UIPollingCollector(
 
     private fun launchWeWork() {
         try {
-            val intent = service.packageManager.getLaunchIntentForPackage(PACKAGE_WEWORK)
+            val intent = service.packageManager.getLaunchIntentForPackage(chatPlatform.packageName)
             if (intent != null) {
                 intent.addFlags(
                     Intent.FLAG_ACTIVITY_NEW_TASK

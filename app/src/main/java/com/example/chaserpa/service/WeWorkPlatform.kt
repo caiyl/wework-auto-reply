@@ -9,11 +9,13 @@ import android.os.Looper
 import android.util.Log
 import android.view.accessibility.AccessibilityNodeInfo
 
-class WeWorkUIAutomator(private val service: AccessibilityService) {
+class WeWorkPlatform(private val service: AccessibilityService) : ChatPlatform {
+
+    override val packageName: String = "com.tencent.wework"
+    override val displayName: String = "企业微信"
 
     companion object {
-        private const val TAG = "WeWorkUIAutomator"
-        private const val PACKAGE_WEWORK = "com.tencent.wework"
+        private const val TAG = "WeWorkPlatform"
     }
 
     private val handler = Handler(Looper.getMainLooper())
@@ -24,7 +26,7 @@ class WeWorkUIAutomator(private val service: AccessibilityService) {
      * 优先选择包含消息列表 RecyclerView（czp）或输入框特征的主窗口，
      * 避免选中侧边栏导致 UI 操作失败。
      */
-    private fun findWeWorkWindow(): AccessibilityNodeInfo? {
+    override fun findActiveChatRoot(service: AccessibilityService): AccessibilityNodeInfo? {
         val windows = service.windows
         MessageLog.add("[AUTO] findWeWorkWindow: windows=${windows.size}")
         var chatRoot: AccessibilityNodeInfo? = null
@@ -33,11 +35,11 @@ class WeWorkUIAutomator(private val service: AccessibilityService) {
             val root = window.root
             val pkg = root?.packageName?.toString()
             MessageLog.add("[AUTO]   window pkg=$pkg children=${root?.childCount}")
-            if (pkg == PACKAGE_WEWORK && root != null) {
+            if (pkg == packageName && root != null) {
                 // 群聊页窗口优先（有输入框），其次消息列表页窗口（有 RecyclerView）。
                 // 不能只看 childCount，否则容易选中侧栏或错误窗口。
                 val hasInput = findInputField(root) != null
-                val hasRecycler = root.findAccessibilityNodeInfosByViewId("com.tencent.wework:id/czp").isNotEmpty()
+                val hasRecycler = root.findAccessibilityNodeInfosByViewId("$packageName:id/czp").isNotEmpty()
                 if (hasInput && chatRoot == null) {
                     chatRoot = root
                 } else if (hasRecycler && listRoot == null) {
@@ -58,15 +60,21 @@ class WeWorkUIAutomator(private val service: AccessibilityService) {
         return active
     }
 
-    fun sendReply(groupName: String, replyText: String) {
+    override fun extractMessages(root: AccessibilityNodeInfo): List<ChatMessage> {
+        // 初始 stub，消息提取逻辑在 Task 5 中从 UIPollingCollector 迁移过来
+        MessageLog.add("[WEWORK] extractMessages not yet migrated")
+        return emptyList()
+    }
+
+    override fun sendReply(groupName: String, replyText: String) {
         MessageLog.add("[AUTO] 准备回复群 '$groupName': $replyText")
         Log.d(TAG, "sendReply: group=$groupName, text=$replyText")
 
-        val rootNode = findWeWorkWindow()
+        val rootNode = findActiveChatRoot(service)
         val pkg = rootNode?.packageName?.toString()
         Log.d(TAG, "current pkg=$pkg, root=${rootNode != null}")
 
-        if (rootNode == null || pkg != PACKAGE_WEWORK) {
+        if (rootNode == null || pkg != packageName) {
             MessageLog.add("[AUTO] 当前不在企业微信(pkg=$pkg)，尝试启动")
             launchWeWork()
             handler.postDelayed({ waitForWeWork(groupName, replyText, 8) }, 1500)
@@ -81,11 +89,11 @@ class WeWorkUIAutomator(private val service: AccessibilityService) {
             MessageLog.add("[AUTO] 等待企业微信出现超时")
             return
         }
-        val root = findWeWorkWindow()
+        val root = findActiveChatRoot(service)
         val pkg = root?.packageName?.toString()
         Log.d(TAG, "waitForWeWork: retries=$retries, pkg=$pkg")
 
-        if (pkg == PACKAGE_WEWORK && root != null) {
+        if (pkg == packageName && root != null) {
             MessageLog.add("[AUTO] 企业微信已出现，继续操作")
             trySend(groupName, replyText)
         } else {
@@ -103,7 +111,7 @@ class WeWorkUIAutomator(private val service: AccessibilityService) {
             return
         }
 
-        val rootNode = findWeWorkWindow()
+        val rootNode = findActiveChatRoot(service)
         if (rootNode == null) {
             MessageLog.add("[AUTO] 无法获取窗口")
             emergencyRecover()
@@ -115,7 +123,7 @@ class WeWorkUIAutomator(private val service: AccessibilityService) {
         val childCount = rootNode.childCount
         MessageLog.add("[AUTO] 当前窗口 pkg=$pkg children=$childCount")
 
-        if (pkg != PACKAGE_WEWORK) {
+        if (pkg != packageName) {
             MessageLog.add("[AUTO] 窗口包名不对，放弃")
             rootNode.recycle()
             emergencyRecover()
@@ -162,7 +170,7 @@ class WeWorkUIAutomator(private val service: AccessibilityService) {
             }
 
             // 检查是否在消息列表页——如果是，直接遍历点击群聊项
-            val recyclerNodes = rootNode.findAccessibilityNodeInfosByViewId("com.tencent.wework:id/czp")
+            val recyclerNodes = rootNode.findAccessibilityNodeInfosByViewId("$packageName:id/czp")
             if (recyclerNodes.isNotEmpty()) {
                 MessageLog.add("[AUTO] 当前在消息列表页，尝试直接点击群聊项")
                 val recycler = recyclerNodes.firstOrNull()
@@ -170,7 +178,7 @@ class WeWorkUIAutomator(private val service: AccessibilityService) {
                 if (recycler != null) {
                     for (i in 0 until minOf(recycler.childCount, 10)) {
                         val item = recycler.getChild(i) ?: continue
-                        val nameNodes = item.findAccessibilityNodeInfosByViewId("com.tencent.wework:id/hrr")
+                        val nameNodes = item.findAccessibilityNodeInfosByViewId("$packageName:id/hrr")
                         val name = nameNodes.firstOrNull()?.text?.toString()
                         if (name == groupName) {
                             var current: AccessibilityNodeInfo? = item
@@ -200,7 +208,7 @@ class WeWorkUIAutomator(private val service: AccessibilityService) {
                 }
                 MessageLog.add("[AUTO] 消息列表页未找到群聊，fallback到搜索")
             } else if (!hasInput) {
-                // 不在消息列表页，也不在聊天页（如通讯录、工作台等），尝试点击底部"消息"Tab
+                // 不在消息列表页，也不在聊天页（可能是通讯录/工作台等），切回消息列表
                 val navigated = navigateToMessageTab(rootNode)
                 if (navigated) {
                     MessageLog.add("[AUTO] 点击'消息'Tab，等待页面切换")
@@ -240,7 +248,7 @@ class WeWorkUIAutomator(private val service: AccessibilityService) {
         }
         titleNodes.forEach { it.recycle() }
 
-        val recyclerNodes = root.findAccessibilityNodeInfosByViewId("com.tencent.wework:id/czp")
+        val recyclerNodes = root.findAccessibilityNodeInfosByViewId("$packageName:id/czp")
         val hasRecycler = recyclerNodes.isNotEmpty()
         recyclerNodes.forEach { it.recycle() }
 
@@ -281,7 +289,7 @@ class WeWorkUIAutomator(private val service: AccessibilityService) {
      */
     fun ensureSafePage(): Boolean {
         for (attempt in 1..3) {
-            val root = findWeWorkWindow()
+            val root = findActiveChatRoot(service)
             if (root == null) {
                 MessageLog.add("[AUTO] ensureSafePage: 无法获取窗口，尝试启动企业微信")
                 launchWeWork()
@@ -296,7 +304,7 @@ class WeWorkUIAutomator(private val service: AccessibilityService) {
                 PageType.MESSAGE_LIST, PageType.CHAT -> return true
                 else -> {
                     MessageLog.add("[AUTO] ensureSafePage: 当前在$page，尝试切回消息列表 (attempt=$attempt)")
-                    val root2 = findWeWorkWindow()
+                    val root2 = findActiveChatRoot(service)
                     if (root2 != null) {
                         navigateToMessageTab(root2)
                         root2.recycle()
@@ -315,7 +323,7 @@ class WeWorkUIAutomator(private val service: AccessibilityService) {
     fun emergencyRecover() {
         MessageLog.add("[AUTO] emergencyRecover: 开始智能恢复")
         for (attempt in 1..5) {
-            val root = findWeWorkWindow()
+            val root = findActiveChatRoot(service)
             if (root == null) {
                 MessageLog.add("[AUTO] emergencyRecover: 企业微信不在前台，尝试启动 (attempt=$attempt)")
                 launchWeWork()
@@ -341,7 +349,7 @@ class WeWorkUIAutomator(private val service: AccessibilityService) {
                 else -> {
                     // 在邮件/文档/工作台/通讯录等页面，直接点消息Tab最快
                     MessageLog.add("[AUTO] emergencyRecover: 在$page，点击'消息'Tab")
-                    val root2 = findWeWorkWindow()
+                    val root2 = findActiveChatRoot(service)
                     if (root2 != null) {
                         navigateToMessageTab(root2)
                         root2.recycle()
@@ -401,11 +409,11 @@ class WeWorkUIAutomator(private val service: AccessibilityService) {
     private fun waitForChatScreen(replyText: String, groupName: String, retries: Int) {
         if (retries <= 0) {
             MessageLog.add("[AUTO] 等待群聊界面超时")
-            val root = findWeWorkWindow()
+            val root = findActiveChatRoot(service)
             if (root != null) dumpTree(root)
             return
         }
-        val root = findWeWorkWindow()
+        val root = findActiveChatRoot(service)
         if (root != null && isInChatScreen(root, groupName)) {
             MessageLog.add("[AUTO] 已进入群聊界面")
             tryTypeAndSend(replyText)
@@ -416,9 +424,9 @@ class WeWorkUIAutomator(private val service: AccessibilityService) {
     }
 
     private fun tryTypeAndSend(text: String) {
-        val rootNode = findWeWorkWindow() ?: return
+        val rootNode = findActiveChatRoot(service) ?: return
         val pkg = rootNode.packageName?.toString()
-        if (pkg != PACKAGE_WEWORK) {
+        if (pkg != packageName) {
             MessageLog.add("[AUTO] 打字前窗口变了 pkg=$pkg")
             return
         }
@@ -443,7 +451,7 @@ class WeWorkUIAutomator(private val service: AccessibilityService) {
             MessageLog.add("[AUTO] 聚焦=$focusSuccess 点击=$clickSuccess")
 
             handler.postDelayed({
-                val freshRoot = findWeWorkWindow()
+                val freshRoot = findActiveChatRoot(service)
                 if (freshRoot == null) {
                     MessageLog.add("[AUTO] 聚焦后窗口丢失")
                     return@postDelayed
@@ -476,7 +484,7 @@ class WeWorkUIAutomator(private val service: AccessibilityService) {
 
     private fun tryClickSend(retryCount: Int = 0) {
         handler.postDelayed({
-            val freshRoot = findWeWorkWindow()
+            val freshRoot = findActiveChatRoot(service)
             if (freshRoot == null) {
                 MessageLog.add("[AUTO] 点击发送前窗口丢失")
                 ensureBackToMessageList(attempt = 1)
@@ -541,7 +549,7 @@ class WeWorkUIAutomator(private val service: AccessibilityService) {
      * 验证完成后确保回到消息列表。
      */
     private fun verifySendAndBack(retryCount: Int) {
-        val root = findWeWorkWindow()
+        val root = findActiveChatRoot(service)
         if (root == null) {
             MessageLog.add("[AUTO] 发送验证时窗口丢失")
             ensureBackToMessageList(attempt = 1)
@@ -570,7 +578,7 @@ class WeWorkUIAutomator(private val service: AccessibilityService) {
      * 备选发送方案：直接再次点击发送按钮（有时第一次点击未生效）。
      */
     private fun tryEnterSend(retryCount: Int) {
-        val root = findWeWorkWindow()
+        val root = findActiveChatRoot(service)
         if (root == null) {
             MessageLog.add("[AUTO] 重试发送时窗口丢失")
             ensureBackToMessageList(attempt = 1)
@@ -649,14 +657,14 @@ class WeWorkUIAutomator(private val service: AccessibilityService) {
         }
 
         // 先尝试点击左上角返回按钮
-        val root = findWeWorkWindow()
+        val root = findActiveChatRoot(service)
         if (root != null) {
             val clicked = clickBackButton(root)
             root.recycle()
             if (clicked) {
                 MessageLog.add("[AUTO] 已点击左上角返回按钮")
                 handler.postDelayed({
-                    val verifyRoot = findWeWorkWindow()
+                    val verifyRoot = findActiveChatRoot(service)
                     if (verifyRoot != null) {
                         val page = detectCurrentPage(verifyRoot)
                         verifyRoot.recycle()
@@ -678,7 +686,7 @@ class WeWorkUIAutomator(private val service: AccessibilityService) {
         service.performGlobalAction(AccessibilityService.GLOBAL_ACTION_BACK)
 
         handler.postDelayed({
-            val verifyRoot = findWeWorkWindow()
+            val verifyRoot = findActiveChatRoot(service)
             if (verifyRoot == null) {
                 MessageLog.add("[AUTO] Back后窗口丢失，触发紧急恢复")
                 emergencyRecover()
@@ -705,7 +713,7 @@ class WeWorkUIAutomator(private val service: AccessibilityService) {
      * 点击群聊页左上角的返回按钮（resource-id: nc9）。
      */
     private fun clickBackButton(root: AccessibilityNodeInfo): Boolean {
-        val backNodes = root.findAccessibilityNodeInfosByViewId("com.tencent.wework:id/nc9")
+        val backNodes = root.findAccessibilityNodeInfosByViewId("$packageName:id/nc9")
         val backBtn = backNodes.firstOrNull()
         if (backBtn != null && backBtn.isClickable) {
             val result = backBtn.performAction(AccessibilityNodeInfo.ACTION_CLICK)
@@ -725,7 +733,7 @@ class WeWorkUIAutomator(private val service: AccessibilityService) {
         val windows = service.windows
         for (window in windows) {
             val root = window.root ?: continue
-            if (root.packageName?.toString() != PACKAGE_WEWORK) {
+            if (root.packageName?.toString() != packageName) {
                 root.recycle()
                 continue
             }
@@ -736,242 +744,6 @@ class WeWorkUIAutomator(private val service: AccessibilityService) {
         return false
     }
 
-//     private fun findGroupBySearch(groupName: String, replyText: String) {
-//         val root = findWeWorkWindow()
-//         if (root == null || root.packageName?.toString() != PACKAGE_WEWORK) {
-//             MessageLog.add("[AUTO] 搜索前窗口不对")
-//             return
-//         }
-// 
-//         val searchBtn = findSearchButton(root)
-//         if (searchBtn == null) {
-//             MessageLog.add("[AUTO] 找不到搜索按钮，fallback 到列表滚动")
-//             findGroupWithScroll(root, groupName, 5) { groupItem ->
-//                 if (groupItem != null) {
-//                     val success = groupItem.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-//                     MessageLog.add("[AUTO] 点击群聊结果: $success")
-//                     handler.postDelayed({ waitForChatScreen(replyText, groupName, 6) }, 2000)
-//                 } else {
-//                     MessageLog.add("[AUTO] 找不到群聊 '$groupName'，打印当前UI树")
-//                     val freshRoot = findWeWorkWindow()
-//                     if (freshRoot != null) dumpTree(freshRoot)
-//                 }
-//             }
-//             return
-//         }
-// 
-//         val clickSuccess = searchBtn.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-//         MessageLog.add("[AUTO] 点击搜索按钮: $clickSuccess")
-// 
-//         handler.postDelayed({
-//             val searchRoot = findWeWorkWindow()
-//             if (searchRoot == null || searchRoot.packageName?.toString() != PACKAGE_WEWORK) {
-//                 MessageLog.add("[AUTO] 搜索界面未出现")
-//                 return@postDelayed
-//             }
-//             MessageLog.add("[AUTO] 搜索界面已出现，开始找输入框")
-// 
-//             // 1. 先尝试标准 EditText
-//             var searchInput = findNodeByClass(searchRoot, "android.widget.EditText")
-//             // 2. Fallback: 找任何可编辑节点
-//             if (searchInput == null) {
-//                 searchInput = findEditableNode(searchRoot)
-//                 if (searchInput != null) {
-//                     MessageLog.add("[AUTO] 通过isEditable找到搜索输入框")
-//                 }
-//             } else {
-//                 MessageLog.add("[AUTO] 通过EditText类找到搜索输入框")
-//             }
-//             // 3. Fallback: 如果搜索界面没有输入框，说明点击的可能不是搜索按钮，回退到列表滚动
-//             if (searchInput == null) {
-//                 MessageLog.add("[AUTO] 搜索界面无输入框，fallback到列表滚动找群聊")
-//                 val listRoot = findWeWorkWindow()
-//                 if (listRoot != null) {
-//                     findGroupWithScroll(listRoot, groupName, 5) { groupItem ->
-//                         if (groupItem != null) {
-//                             val success = groupItem.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-//                             MessageLog.add("[AUTO] 点击群聊结果: $success")
-//                             handler.postDelayed({ waitForChatScreen(replyText, groupName, 6) }, 2000)
-//                         } else {
-//                             MessageLog.add("[AUTO] 列表滚动也找不到群聊 '$groupName'")
-//                         }
-//                     }
-//                 }
-//                 return@postDelayed
-//             }
-// 
-//             val args = Bundle()
-//             args.putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, groupName)
-//             val setTextSuccess = searchInput.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)
-//             MessageLog.add("[AUTO] 输入搜索文字: $setTextSuccess")
-// 
-//             handler.postDelayed({
-//                 val resultRoot = findWeWorkWindow()
-//                 if (resultRoot == null || resultRoot.packageName?.toString() != PACKAGE_WEWORK) {
-//                     MessageLog.add("[AUTO] 搜索结果窗口丢失")
-//                     return@postDelayed
-//                 }
-// 
-//                 val resultNodes = resultRoot.findAccessibilityNodeInfosByText(groupName)
-//                 MessageLog.add("[AUTO] 搜索结果节点数: ${resultNodes.size}")
-//                 // 企业微信搜索结果可能显示 "群名 (人数) 外部"，用 contains 匹配
-//                 // 必须排除搜索输入框本身（EditText），否则点的是输入框不是结果
-//                 val result = resultNodes.find {
-//                     val cls = it.className?.toString() ?: ""
-//                     if (cls.contains("EditText")) return@find false
-//                     val t = it.text?.toString() ?: ""
-//                     val d = it.contentDescription?.toString() ?: ""
-//                     t.contains(groupName) || d.contains(groupName)
-//                 }
-// 
-//                 if (result == null) {
-//                     MessageLog.add("[AUTO] 搜索结果中没有群名，打印UI树")
-//                     dumpTree(resultRoot)
-//                     return@postDelayed
-//                 }
-//                 MessageLog.add("[AUTO] 找到搜索结果节点: class=${result.className} text=${result.text}")
-// 
-//                 // 向上找可点击父节点，最多10层
-//                 var current: AccessibilityNodeInfo? = result
-//                 var depth = 0
-//                 var clickableNode: AccessibilityNodeInfo? = null
-//                 while (current != null && depth < 10) {
-//                     if (current.isClickable) {
-//                         clickableNode = current
-//                         break
-//                     }
-//                     current = current.parent
-//                     depth++
-//                 }
-// 
-//                 // 如果向上找不到 clickable，尝试直接用包含群名的节点点击（部分系统支持）
-//                 if (clickableNode == null) {
-//                     MessageLog.add("[AUTO] 向上找不到 clickable 父节点，尝试直接点击文本节点")
-//                     val directClick = result.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-//                     MessageLog.add("[AUTO] 直接点击结果: $directClick")
-//                     if (directClick) {
-//                         handler.postDelayed({ waitForChatScreen(replyText, groupName, 6) }, 2000)
-//                         return@postDelayed
-//                     }
-//                 }
-// 
-//                 if (clickableNode != null) {
-//                     val clickResult = clickableNode.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-//                     MessageLog.add("[AUTO] 点击搜索结果: $clickResult")
-//                     handler.postDelayed({ waitForChatScreen(replyText, groupName, 6) }, 2000)
-//                 } else {
-//                     MessageLog.add("[AUTO] 搜索结果不可点击，fallback 到打印UI树")
-//                     dumpTree(resultRoot)
-//                 }
-//             }, 1500)
-//         }, 1500)
-//     }
-// 
-//     private fun findGroupWithScroll(root: AccessibilityNodeInfo, groupName: String, maxScrolls: Int, onFound: (AccessibilityNodeInfo?) -> Unit) {
-//         val groupItem = findGroupInCurrentScreen(root, groupName)
-//         if (groupItem != null) {
-//             onFound(groupItem)
-//             return
-//         }
-// 
-//         if (maxScrolls <= 0) {
-//             onFound(null)
-//             return
-//         }
-// 
-//         val scrollable = findScrollableContainer(root)
-//         if (scrollable == null) {
-//             onFound(null)
-//             return
-//         }
-// 
-//         val scrolled = scrollable.performAction(AccessibilityNodeInfo.ACTION_SCROLL_FORWARD)
-//         MessageLog.add("[AUTO] 滚动列表结果: $scrolled，剩余次数: $maxScrolls")
-// 
-//         if (scrolled) {
-//             handler.postDelayed({
-//                 val freshRoot = findWeWorkWindow()
-//                 if (freshRoot != null) {
-//                     findGroupWithScroll(freshRoot, groupName, maxScrolls - 1, onFound)
-//                 } else {
-//                     onFound(null)
-//                 }
-//             }, 1200)
-//         } else {
-//             onFound(null)
-//         }
-//     }
-// 
-//     private fun findGroupInCurrentScreen(root: AccessibilityNodeInfo, groupName: String): AccessibilityNodeInfo? {
-//         // 精确匹配文字
-//         val nodes = root.findAccessibilityNodeInfosByText(groupName)
-//         val exactNode = nodes.find { it.text?.toString() == groupName }
-// 
-//         if (exactNode == null) {
-//             return null
-//         }
-// 
-//         MessageLog.add("[AUTO] 找到群名节点: class=${exactNode.className} text=${exactNode.text} clickable=${exactNode.isClickable}")
-// 
-//         // 向上找列表项父节点
-//         var current: AccessibilityNodeInfo? = exactNode
-//         var depth = 0
-//         var listItem: AccessibilityNodeInfo? = null
-// 
-//         while (current != null && depth < 10) {
-//             val parent = current.parent
-// 
-//             // 如果父节点是 RecyclerView 或 ListView，current 就是列表项
-//             if (parent != null && (
-//                         parent.className?.toString()?.contains("RecyclerView") == true ||
-//                         parent.className?.toString()?.contains("ListView") == true
-//                     )) {
-//                 listItem = current
-//                 MessageLog.add("[AUTO] 定位到列表项: class=${current.className} clickable=${current.isClickable}")
-//                 break
-//             }
-// 
-//             current = parent
-//             depth++
-//         }
-// 
-//         // 如果没找到 RecyclerView/ListView 父节点，就退而求其次找可点击父节点
-//         if (listItem == null) {
-//             current = exactNode
-//             depth = 0
-//             while (current != null && depth < 5) {
-//                 if (current.isClickable) {
-//                     listItem = current
-//                     MessageLog.add("[AUTO] 定位到可点击父节点: class=${current.className}")
-//                     break
-//                 }
-//                 current = current.parent
-//                 depth++
-//             }
-//         }
-// 
-//         return listItem
-//     }
-// 
-//     private fun findScrollableContainer(root: AccessibilityNodeInfo): AccessibilityNodeInfo? {
-//         val deque = java.util.ArrayDeque<AccessibilityNodeInfo>()
-//         deque.add(root)
-//         while (deque.isNotEmpty()) {
-//             val node = deque.poll() ?: continue
-//             if (node.isScrollable && (
-//                         node.className?.toString()?.contains("RecyclerView") == true ||
-//                         node.className?.toString()?.contains("ListView") == true ||
-//                         node.className?.toString()?.contains("ScrollView") == true
-//                     )) {
-//                 return node
-//             }
-//             for (i in 0 until node.childCount) {
-//                 node.getChild(i)?.let { deque.add(it) }
-//             }
-//         }
-//         return null
-//     }
-// 
     /**
      * 查找群聊页输入框。
      * vivo 版本 hint 为 "发消息或按住..."（resource-id: i_6，class: EditText）。
@@ -1068,84 +840,82 @@ class WeWorkUIAutomator(private val service: AccessibilityService) {
         return null
     }
 
-//     private fun findSearchButton(root: AccessibilityNodeInfo): AccessibilityNodeInfo? {
-//         val hints = listOf("搜索", "查找", "Search")
-//         for (hint in hints) {
-//             val deque = java.util.ArrayDeque<AccessibilityNodeInfo>()
-//             deque.add(root)
-//             while (deque.isNotEmpty()) {
-//                 val node = deque.poll() ?: continue
-//                 if (node.contentDescription?.toString() == hint) {
-//                     return node
-//                 }
-//                 for (i in 0 until node.childCount) {
-//                     node.getChild(i)?.let { deque.add(it) }
-//                 }
-//             }
-//         }
-//         // Fallback: 找屏幕顶部标题栏的可点击节点，按水平位置排序后返回中间那个
-//         return findCenterClickableInTopBar(root)
-//     }
-// 
-//     private fun findCenterClickableInTopBar(root: AccessibilityNodeInfo): AccessibilityNodeInfo? {
-//         val rootRect = android.graphics.Rect()
-//         root.getBoundsInScreen(rootRect)
-//         // 扩大搜索区域到顶部 25%，水平方向只排除最边缘 5%
-//         val minTop = rootRect.top
-//         val maxBottom = (rootRect.top + rootRect.height() * 0.25).toInt()
-//         val minLeft = (rootRect.left + rootRect.width() * 0.05).toInt()
-//         val maxRight = (rootRect.left + rootRect.width() * 0.95).toInt()
-// 
-//         val nodeRect = android.graphics.Rect()
-//         val candidates = mutableListOf<Pair<AccessibilityNodeInfo, android.graphics.Rect>>()
-//         val deque = java.util.ArrayDeque<AccessibilityNodeInfo>()
-//         deque.add(root)
-//         while (deque.isNotEmpty()) {
-//             val node = deque.poll() ?: continue
-//             if (node.isClickable) {
-//                 node.getBoundsInScreen(nodeRect)
-//                 if (nodeRect.top >= minTop && nodeRect.bottom <= maxBottom &&
-//                     nodeRect.left >= minLeft && nodeRect.right <= maxRight) {
-//                     candidates.add(node to android.graphics.Rect(nodeRect))
-//                 }
-//             }
-//             for (i in 0 until node.childCount) {
-//                 node.getChild(i)?.let { deque.add(it) }
-//             }
-//         }
-// 
-//         candidates.sortBy { it.second.centerX() }
-//         MessageLog.add("[AUTO] 顶部可点击按钮数: ${candidates.size}")
-//         candidates.forEachIndexed { idx, pair ->
-//             val txt = pair.first.text?.toString()?.take(10) ?: ""
-//             val desc = pair.first.contentDescription?.toString()?.take(10) ?: ""
-//             MessageLog.add("[AUTO]   按钮$idx: class=${pair.first.className} id=${pair.first.viewIdResourceName} text='$txt' desc='$desc' centerX=${pair.second.centerX()}")
-//         }
-// 
-//         // 企业微信右上角通常是：...[放大镜][+号]
-//         // 最右边是 + 号，倒数第二个才是放大镜搜索按钮
-//         val result = when {
-//             candidates.isEmpty() -> null
-//             candidates.size == 1 -> candidates[0].first
-//             else -> {
-//                 // 找屏幕最右侧的两个按钮（差距 < 150px 视为一组）
-//                 val rightmost = candidates.last()
-//                 val secondRightmost = candidates[candidates.size - 2]
-//                 val gap = rightmost.second.centerX() - secondRightmost.second.centerX()
-//                 if (gap < 150) {
-//                     MessageLog.add("[AUTO] 右上角有两个紧邻按钮，选择左边的（放大镜）")
-//                     secondRightmost.first
-//                 } else {
-//                     candidates.last().first
-//                 }
-//             }
-//         }
-//         if (result != null) {
-//             MessageLog.add("[AUTO] 选择搜索按钮: class=${result.className} id=${result.viewIdResourceName}")
-//         }
-//         return result
-//     }
-// 
+    private fun findEditableNode(root: AccessibilityNodeInfo): AccessibilityNodeInfo? {
+        val deque = java.util.ArrayDeque<AccessibilityNodeInfo>()
+        deque.add(root)
+        while (deque.isNotEmpty()) {
+            val node = deque.poll() ?: continue
+            if (node.isEditable) {
+                return node
+            }
+            for (i in 0 until node.childCount) {
+                node.getChild(i)?.let { deque.add(it) }
+            }
+        }
+        return null
+    }
+
+    private fun findNodeByClass(root: AccessibilityNodeInfo, className: String): AccessibilityNodeInfo? {
+        val deque = java.util.ArrayDeque<AccessibilityNodeInfo>()
+        deque.add(root)
+        while (deque.isNotEmpty()) {
+            val node = deque.poll() ?: continue
+            if (node.className?.toString() == className) {
+                return node
+            }
+            for (i in 0 until node.childCount) {
+                node.getChild(i)?.let { deque.add(it) }
+            }
+        }
+        return null
+    }
+
+    private fun launchWeWork() {
+        try {
+            // 先让 ChaserPA 自己回到前台，绕过 Android 10+ 后台启动 Activity 限制
+            val selfIntent = service.packageManager.getLaunchIntentForPackage(service.packageName)
+            if (selfIntent != null) {
+                selfIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+                service.startActivity(selfIntent)
+                MessageLog.add("[AUTO] 先切回 ChaserPA 前台")
+            }
+
+            handler.postDelayed({
+                var intent = service.packageManager.getLaunchIntentForPackage(packageName)
+                if (intent == null) {
+                    MessageLog.add("[AUTO] getLaunchIntent 为空，尝试 resolveActivity")
+                    val queryIntent = Intent(Intent.ACTION_MAIN).apply {
+                        addCategory(Intent.CATEGORY_LAUNCHER)
+                        `package` = packageName
+                    }
+                    val resolveInfo = service.packageManager.resolveActivity(queryIntent, 0)
+                    if (resolveInfo != null) {
+                        val activityName = resolveInfo.activityInfo.name
+                        intent = Intent(Intent.ACTION_MAIN).apply {
+                            addCategory(Intent.CATEGORY_LAUNCHER)
+                            component = ComponentName(packageName, activityName)
+                        }
+                    }
+                }
+                if (intent != null) {
+                    intent.addFlags(
+                        Intent.FLAG_ACTIVITY_NEW_TASK
+                            or Intent.FLAG_ACTIVITY_CLEAR_TOP
+                            or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT
+                            or Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED
+                    )
+                    service.startActivity(intent)
+                    MessageLog.add("[AUTO] 已发送启动企业微信的 Intent")
+                } else {
+                    MessageLog.add("[AUTO] 无法启动企业微信：resolveActivity 也失败")
+                }
+            }, 800)
+        } catch (e: Exception) {
+            MessageLog.add("[AUTO] 启动异常: ${e.javaClass.simpleName} ${e.message}")
+            Log.e(TAG, "launchWeWork failed", e)
+        }
+    }
+
     private fun findSendButton(root: AccessibilityNodeInfo): AccessibilityNodeInfo? {
         val rootRect = android.graphics.Rect()
         root.getBoundsInScreen(rootRect)
@@ -1157,7 +927,7 @@ class WeWorkUIAutomator(private val service: AccessibilityService) {
         // 0. 通过 resource-id 匹配（最稳定，优先）
         // vivo 版本企业微信发送按钮 ID: i_2（class=Button, text="发送", clickable=true）
         // 注：仅在输入框有文字时才显示，空输入框时该节点不存在
-        val byId = root.findAccessibilityNodeInfosByViewId("com.tencent.wework:id/i_2")
+        val byId = root.findAccessibilityNodeInfosByViewId("$packageName:id/i_2")
         val idMatch = byId.firstOrNull()
         if (idMatch != null && idMatch.isClickable) {
             idMatch.getBoundsInScreen(nodeRect)
@@ -1234,82 +1004,6 @@ class WeWorkUIAutomator(private val service: AccessibilityService) {
             MessageLog.add("[AUTO] 通过位置找到发送按钮: class=${fallback.className} id=${fallback.viewIdResourceName}")
         }
         return fallback
-    }
-
-    private fun findEditableNode(root: AccessibilityNodeInfo): AccessibilityNodeInfo? {
-        val deque = java.util.ArrayDeque<AccessibilityNodeInfo>()
-        deque.add(root)
-        while (deque.isNotEmpty()) {
-            val node = deque.poll() ?: continue
-            if (node.isEditable) {
-                return node
-            }
-            for (i in 0 until node.childCount) {
-                node.getChild(i)?.let { deque.add(it) }
-            }
-        }
-        return null
-    }
-
-    private fun findNodeByClass(root: AccessibilityNodeInfo, className: String): AccessibilityNodeInfo? {
-        val deque = java.util.ArrayDeque<AccessibilityNodeInfo>()
-        deque.add(root)
-        while (deque.isNotEmpty()) {
-            val node = deque.poll() ?: continue
-            if (node.className?.toString() == className) {
-                return node
-            }
-            for (i in 0 until node.childCount) {
-                node.getChild(i)?.let { deque.add(it) }
-            }
-        }
-        return null
-    }
-
-    private fun launchWeWork() {
-        try {
-            // 先让 ChaserPA 自己回到前台，绕过 Android 10+ 后台启动 Activity 限制
-            val selfIntent = service.packageManager.getLaunchIntentForPackage(service.packageName)
-            if (selfIntent != null) {
-                selfIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
-                service.startActivity(selfIntent)
-                MessageLog.add("[AUTO] 先切回 ChaserPA 前台")
-            }
-
-            handler.postDelayed({
-                var intent = service.packageManager.getLaunchIntentForPackage(PACKAGE_WEWORK)
-                if (intent == null) {
-                    MessageLog.add("[AUTO] getLaunchIntent 为空，尝试 resolveActivity")
-                    val queryIntent = Intent(Intent.ACTION_MAIN).apply {
-                        addCategory(Intent.CATEGORY_LAUNCHER)
-                        `package` = PACKAGE_WEWORK
-                    }
-                    val resolveInfo = service.packageManager.resolveActivity(queryIntent, 0)
-                    if (resolveInfo != null) {
-                        val activityName = resolveInfo.activityInfo.name
-                        intent = Intent(Intent.ACTION_MAIN).apply {
-                            addCategory(Intent.CATEGORY_LAUNCHER)
-                            component = ComponentName(PACKAGE_WEWORK, activityName)
-                        }
-                    }
-                }
-                if (intent != null) {
-                    intent.addFlags(
-                        Intent.FLAG_ACTIVITY_NEW_TASK
-                            or Intent.FLAG_ACTIVITY_CLEAR_TOP
-                            or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT
-                            or Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED
-                    )
-                    service.startActivity(intent)
-                    MessageLog.add("[AUTO] 已发送启动企业微信的 Intent")
-                } else {
-                    MessageLog.add("[AUTO] 无法启动企业微信：resolveActivity 也失败")
-                }
-            }, 800)
-        } catch (e: Exception) {
-            MessageLog.add("[AUTO] 启动异常: ${e.javaClass.simpleName} ${e.message}")
-            Log.e(TAG, "launchWeWork failed", e)
-        }
     }
 
     private fun dumpTree(root: AccessibilityNodeInfo) {

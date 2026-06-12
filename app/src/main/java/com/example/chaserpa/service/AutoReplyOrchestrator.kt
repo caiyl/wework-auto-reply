@@ -4,7 +4,7 @@ import android.os.Handler
 import android.os.Looper
 
 class AutoReplyOrchestrator(
-    private val uiAutomator: WeWorkUIAutomator
+    private val chatPlatform: ChatPlatform
 ) {
     companion object {
         private const val MAX_QUEUE_SIZE = 10
@@ -42,7 +42,7 @@ class AutoReplyOrchestrator(
             task = queue.removeFirst()
         }
         MessageLog.add("[REPLY] Executing: ${task.groupName}")
-        uiAutomator.sendReply(task.groupName, task.replyText)
+        chatPlatform.sendReply(task.groupName, task.replyText)
         handler.postDelayed({
             synchronized(this) {
                 isProcessing = false

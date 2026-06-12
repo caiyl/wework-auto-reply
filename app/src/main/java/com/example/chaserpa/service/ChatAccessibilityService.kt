@@ -6,24 +6,24 @@ import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import com.example.chaserpa.data.ConfigRepository
 
-class WeWorkAccessibilityService : AccessibilityService() {
+class ChatAccessibilityService : AccessibilityService() {
 
     companion object {
-        private const val TAG = "WeWorkAccessibilityService"
+        private const val TAG = "ChatAccessibilityService"
         @Volatile
         var isRunning: Boolean = false
             private set
 
         @Volatile
-        var instance: WeWorkAccessibilityService? = null
+        var instance: ChatAccessibilityService? = null
             private set
 
         /**
          * vivo 系统 rootInActiveWindow / windows 经常返回 null 或错误窗口，
-         * 改为通过无障碍事件缓存企业微信最新的根节点，供轮询直接使用。
+         * 改为通过无障碍事件缓存目标 App 最新的根节点，供轮询直接使用。
          */
         @Volatile
-        var latestWeWorkRoot: AccessibilityNodeInfo? = null
+        var latestChatRoot: AccessibilityNodeInfo? = null
 
         /**
          * 外部调用（如 ConfigScreen 切换开关）来更新监控状态。
@@ -40,7 +40,7 @@ class WeWorkAccessibilityService : AccessibilityService() {
     private lateinit var deduplicator: MessageDeduplicator
     private lateinit var messagePusher: MessagePusher
     private lateinit var messageCollector: MessageCollector
-    private lateinit var uiAutomator: WeWorkUIAutomator
+    private lateinit var chatPlatform: ChatPlatform
     private lateinit var autoReplyOrchestrator: AutoReplyOrchestrator
     private var uiPollingCollector: UIPollingCollector? = null
     private var replyWorker: ReplyWorker? = null
@@ -65,8 +65,8 @@ class WeWorkAccessibilityService : AccessibilityService() {
         MessageLog.add("[SYS] 配置加载完成，目标群: $groups, 监控状态: $monitoringEnabled")
 
         deduplicator = MessageDeduplicator()
-        uiAutomator = WeWorkUIAutomator(this)
-        autoReplyOrchestrator = AutoReplyOrchestrator(uiAutomator)
+        chatPlatform = createPlatform(configRepository.chatApp)
+        autoReplyOrchestrator = AutoReplyOrchestrator(chatPlatform)
 
         messagePusher = MessagePusher(
             backendUrl = configRepository.backendUrl,
@@ -78,7 +78,7 @@ class WeWorkAccessibilityService : AccessibilityService() {
         )
 
         val myNickname = configRepository.myNickname
-        val onMessageCollected: (MessagePusher.WeWorkMessage) -> Unit = { message ->
+        val onMessageCollected: (ChatMessage) -> Unit = { message ->
             // 过滤自己发送的消息，防止死循环
             if (myNickname.isNotEmpty() && message.sender == myNickname) {
                 MessageLog.add("[SYS] 过滤自己发送的消息: ${message.content}")
@@ -86,7 +86,14 @@ class WeWorkAccessibilityService : AccessibilityService() {
                 val timestamp = System.currentTimeMillis()
                 if (!deduplicator.isDuplicate(message.groupName, message.sender, message.content, timestamp)) {
                     MessageLog.add("[CAPTURE] group=${message.groupName}, sender=${message.sender}, content=${message.content}")
-                    messagePusher.push(message)
+                    // 转换为 MessagePusher 当前使用的 WeWorkMessage，后续可统一为 ChatMessage
+                    val weWorkMessage = MessagePusher.WeWorkMessage(
+                        groupName = message.groupName,
+                        sender = message.sender,
+                        content = message.content,
+                        timestamp = timestamp
+                    )
+                    messagePusher.push(weWorkMessage)
                 } else {
                     Log.d(TAG, "Duplicate message ignored: ${message.content}")
                     MessageLog.add("[SYS] 重复消息已忽略")
@@ -97,6 +104,7 @@ class WeWorkAccessibilityService : AccessibilityService() {
         messageCollector = MessageCollector(
             service = this,
             config = configRepository,
+            chatPlatform = chatPlatform,
             onMessageCollected = onMessageCollected
         )
         MessageLog.add("[SYS] MessageCollector 初始化完成")
@@ -104,13 +112,14 @@ class WeWorkAccessibilityService : AccessibilityService() {
         uiPollingCollector = UIPollingCollector(
             service = this,
             config = configRepository,
-            onMessage = onMessageCollected
+            chatPlatform = chatPlatform,
+            onMessageCollected = onMessageCollected
         )
 
         replyWorker = ReplyWorker(
             service = this,
             config = configRepository,
-            uiAutomator = uiAutomator
+            chatPlatform = chatPlatform
         )
 
         keepAliveWorker = KeepAliveWorker(this)
@@ -122,6 +131,13 @@ class WeWorkAccessibilityService : AccessibilityService() {
 
         // 根据当前监控开关状态启动/暂停
         applyMonitoringState(monitoringEnabled)
+    }
+
+    private fun createPlatform(chatApp: ChatApp): ChatPlatform {
+        return when (chatApp) {
+            ChatApp.WEWORK -> WeWorkPlatform(this)
+            ChatApp.WECHAT -> WeChatPlatform(this)
+        }
     }
 
     private fun applyMonitoringState(enabled: Boolean) {
@@ -160,8 +176,8 @@ class WeWorkAccessibilityService : AccessibilityService() {
     override fun onAccessibilityEvent(event: AccessibilityEvent) {
         val pkg = event.packageName?.toString()
 
-        // 缓存企业微信最新的根节点（vivo 系统 rootInActiveWindow 不可靠）
-        if (pkg == "com.tencent.wework") {
+        // 缓存目标 App 最新的根节点（vivo 系统 rootInActiveWindow 不可靠）
+        if (pkg == chatPlatform.packageName) {
             val source = event.source
             if (source != null) {
                 var root: AccessibilityNodeInfo? = source
@@ -174,7 +190,7 @@ class WeWorkAccessibilityService : AccessibilityService() {
                         break
                     }
                 }
-                latestWeWorkRoot = root
+                latestChatRoot = root
             }
         }
 

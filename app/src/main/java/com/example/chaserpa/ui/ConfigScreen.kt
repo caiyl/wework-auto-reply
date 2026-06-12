@@ -39,8 +39,9 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import com.example.chaserpa.data.ConfigRepository
+import com.example.chaserpa.service.ChatAccessibilityService
+import com.example.chaserpa.service.ChatApp
 import com.example.chaserpa.service.MessageLog
-import com.example.chaserpa.service.WeWorkAccessibilityService
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -63,7 +64,7 @@ fun ConfigScreen() {
     var replyPollInterval by remember { mutableStateOf(configRepository.replyPollInterval) }
     var monitoringEnabled by remember { mutableStateOf(configRepository.monitoringEnabled) }
     var savedMessage by remember { mutableStateOf<String?>(null) }
-    val serviceRunning = WeWorkAccessibilityService.isRunning
+    val serviceRunning = ChatAccessibilityService.isRunning
 
     Scaffold(
         topBar = {
@@ -120,7 +121,7 @@ fun ConfigScreen() {
                     onCheckedChange = {
                         monitoringEnabled = it
                         configRepository.monitoringEnabled = it
-                        WeWorkAccessibilityService.updateMonitoringState(it)
+                        ChatAccessibilityService.updateMonitoringState(it)
                         savedMessage = if (it) "监控已开启" else "监控已暂停"
                     }
                 )

@@ -3,6 +3,8 @@ package com.example.chaserpa.data
 import android.content.Context
 import android.content.SharedPreferences
 
+import com.example.chaserpa.service.ChatApp
+
 class ConfigRepository(context: Context) {
 
     private val prefs: SharedPreferences =
@@ -23,7 +25,19 @@ class ConfigRepository(context: Context) {
         private const val KEY_REPLY_POLL_INTERVAL = "reply_poll_interval"
         private const val KEY_REPLY_BACKEND_URL = "reply_backend_url"
         private const val KEY_MONITORING_ENABLED = "monitoring_enabled"
+        private const val KEY_CHAT_APP = "chat_app"
     }
+
+    var chatApp: ChatApp
+        get() {
+            val name = prefs.getString(KEY_CHAT_APP, ChatApp.WEWORK.name)
+            return try {
+                ChatApp.valueOf(name ?: ChatApp.WEWORK.name)
+            } catch (_: IllegalArgumentException) {
+                ChatApp.WEWORK
+            }
+        }
+        set(value) = prefs.edit().putString(KEY_CHAT_APP, value.name).apply()
 
     var backendUrl: String
         get() = prefs.getString(KEY_BACKEND_URL, "") ?: ""

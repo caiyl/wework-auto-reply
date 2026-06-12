@@ -16,12 +16,12 @@ import java.io.IOException
 import java.util.concurrent.TimeUnit
 
 /**
- * 独立回复轮询线程，定时从后台 HTTP 拉取待回复消息，并通过 WeWorkUIAutomator 执行 UI 回复。
+ * 独立回复轮询线程，定时从后台 HTTP 拉取待回复消息，并通过 ChatPlatform 执行 UI 回复。
  */
 class ReplyWorker(
     private val service: AccessibilityService,
     private val config: ConfigRepository,
-    private val uiAutomator: WeWorkUIAutomator
+    private val chatPlatform: ChatPlatform
 ) {
     companion object {
         private const val TAG = "ReplyWorker"
@@ -175,7 +175,7 @@ class ReplyWorker(
         isProcessing = true
         UiController.acquire()
 
-        uiAutomator.sendReply(reply.groupName, reply.replyText)
+        chatPlatform.sendReply(reply.groupName, reply.replyText)
 
         handler.postDelayed({
             isProcessing = false
