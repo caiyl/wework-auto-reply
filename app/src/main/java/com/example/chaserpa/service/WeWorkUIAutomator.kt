@@ -32,10 +32,12 @@ class WeWorkUIAutomator(private val service: AccessibilityService) {
         for (window in windows) {
             val root = window.root
             val pkg = root?.packageName?.toString()
-            MessageLog.add("[AUTO]   window pkg=$pkg children=${root?.childCount}")
+            val childCount = root?.childCount ?: 0
+            MessageLog.add("[AUTO]   window pkg=$pkg children=$childCount")
             if (pkg == PACKAGE_WEWORK && root != null) {
                 // 群聊页窗口优先（有输入框），其次消息列表页窗口（有 RecyclerView）。
-                // 不能只看 childCount，否则容易选中侧栏或错误窗口。
+                // vivo 上主窗口可能被包在一个 FrameLayout 里（children=1），
+                // 所以不能只看 childCount，要通过实际内容判断。
                 val hasInput = findInputField(root) != null
                 val hasRecycler = root.findAccessibilityNodeInfosByViewId("com.tencent.wework:id/czp").isNotEmpty()
                 if (hasInput && chatRoot == null) {
@@ -58,7 +60,16 @@ class WeWorkUIAutomator(private val service: AccessibilityService) {
         return active
     }
 
-    fun sendReply(groupName: String, replyText: String) {
+    private var onReplyComplete: (() -> Unit)? = null
+
+    fun sendReply(groupName: String, replyText: String, onComplete: (() -> Unit)? = null) {
+        this.onReplyComplete = onComplete
+
+        if (!WeWorkAccessibilityService.isMonitoringEnabled()) {
+            MessageLog.add("[AUTO] 监控已停止，不执行回复")
+            finishReply()
+            return
+        }
         MessageLog.add("[AUTO] 准备回复群 '$groupName': $replyText")
         Log.d(TAG, "sendReply: group=$groupName, text=$replyText")
 
@@ -76,9 +87,16 @@ class WeWorkUIAutomator(private val service: AccessibilityService) {
         trySend(groupName, replyText)
     }
 
+    private fun finishReply() {
+        val callback = onReplyComplete
+        onReplyComplete = null
+        callback?.invoke()
+    }
+
     private fun waitForWeWork(groupName: String, replyText: String, retries: Int) {
         if (retries <= 0) {
             MessageLog.add("[AUTO] 等待企业微信出现超时")
+            finishReply()
             return
         }
         val root = findWeWorkWindow()
@@ -99,7 +117,7 @@ class WeWorkUIAutomator(private val service: AccessibilityService) {
         if (!ensureSafePage()) {
             MessageLog.add("[AUTO] trySend: 无法进入安全页面，放弃本次回复")
             emergencyRecover()
-            UiController.release()
+            finishReply()
             return
         }
 
@@ -107,7 +125,7 @@ class WeWorkUIAutomator(private val service: AccessibilityService) {
         if (rootNode == null) {
             MessageLog.add("[AUTO] 无法获取窗口")
             emergencyRecover()
-            UiController.release()
+            finishReply()
             return
         }
 
@@ -119,7 +137,7 @@ class WeWorkUIAutomator(private val service: AccessibilityService) {
             MessageLog.add("[AUTO] 窗口包名不对，放弃")
             rootNode.recycle()
             emergencyRecover()
-            UiController.release()
+            finishReply()
             return
         }
 
@@ -128,7 +146,7 @@ class WeWorkUIAutomator(private val service: AccessibilityService) {
             dumpTree(rootNode)
             rootNode.recycle()
             emergencyRecover()
-            UiController.release()
+            finishReply()
             return
         }
 
@@ -214,7 +232,7 @@ class WeWorkUIAutomator(private val service: AccessibilityService) {
             MessageLog.add("[AUTO] 消息列表页未找到群聊，搜索已禁用")
             rootNode.recycle()
             emergencyRecover()
-            UiController.release()
+            finishReply()
             return
         }
 
@@ -401,25 +419,74 @@ class WeWorkUIAutomator(private val service: AccessibilityService) {
     private fun waitForChatScreen(replyText: String, groupName: String, retries: Int) {
         if (retries <= 0) {
             MessageLog.add("[AUTO] 等待群聊界面超时")
-            val root = findWeWorkWindow()
-            if (root != null) dumpTree(root)
+            dumpAllWeWorkWindows()
+            finishReply()
             return
         }
-        val root = findWeWorkWindow()
-        if (root != null && isInChatScreen(root, groupName)) {
+
+        // vivo 上聊天页可能是新窗口，findWeWorkWindow 可能优先返回消息列表窗口。
+        // 改为遍历所有企业微信窗口，直接检测聊天页特征。
+        val chatRoot = findChatWindowAcrossWindows(groupName)
+        if (chatRoot != null) {
             MessageLog.add("[AUTO] 已进入群聊界面")
             tryTypeAndSend(replyText)
+            chatRoot.recycle()
         } else {
             MessageLog.add("[AUTO] 等待群聊界面...")
-            handler.postDelayed({ waitForChatScreen(replyText, groupName, retries - 1) }, 1200)
+            handler.postDelayed({ waitForChatScreen(replyText, groupName, retries - 1) }, 1500)
+        }
+    }
+
+    /**
+     * 遍历所有窗口，查找标题和输入框都匹配的群聊页。
+     */
+    private fun findChatWindowAcrossWindows(groupName: String): AccessibilityNodeInfo? {
+        val windows = service.windows
+        for (window in windows) {
+            val root = window.root ?: continue
+            if (root.packageName?.toString() != PACKAGE_WEWORK) {
+                root.recycle()
+                continue
+            }
+            if (isInChatScreen(root, groupName)) {
+                return root
+            }
+            root.recycle()
+        }
+        return null
+    }
+
+    /**
+     * dump 所有企业微信窗口，用于超时后诊断。
+     */
+    private fun dumpAllWeWorkWindows() {
+        val windows = service.windows
+        var dumped = 0
+        for (window in windows) {
+            val root = window.root ?: continue
+            if (root.packageName?.toString() == PACKAGE_WEWORK) {
+                MessageLog.add("[AUTO] dump 第 ${dumped + 1} 个企业微信窗口")
+                dumpTree(root)
+                dumped++
+            }
+            root.recycle()
+        }
+        if (dumped == 0) {
+            MessageLog.add("[AUTO] 超时后未找到任何企业微信窗口")
         }
     }
 
     private fun tryTypeAndSend(text: String) {
-        val rootNode = findWeWorkWindow() ?: return
+        val rootNode = findWeWorkWindow() ?: run {
+            MessageLog.add("[AUTO] 打字前窗口丢失")
+            finishReply()
+            return
+        }
         val pkg = rootNode.packageName?.toString()
         if (pkg != PACKAGE_WEWORK) {
             MessageLog.add("[AUTO] 打字前窗口变了 pkg=$pkg")
+            rootNode.recycle()
+            finishReply()
             return
         }
 
@@ -427,94 +494,148 @@ class WeWorkUIAutomator(private val service: AccessibilityService) {
         if (inputNode == null) {
             MessageLog.add("[AUTO] 找不到输入框")
             dumpTree(rootNode)
+            rootNode.recycle()
+            finishReply()
             return
         }
+
+        // 关键修复：先确保输入框获得焦点，再设置文字。
+        // vivo/企业微信在输入框未聚焦时设置文字，发送按钮不会从右侧工具栏切换出来，
+        // 导致后续 findSendButton 可能误点“+”或语音按钮，消息未发送就退出，最终存为草稿。
+        val focusSuccess = inputNode.performAction(AccessibilityNodeInfo.ACTION_FOCUS)
+        val clickSuccess = inputNode.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+        MessageLog.add("[AUTO] 输入框聚焦=$focusSuccess 点击=$clickSuccess")
 
         val args = Bundle()
         args.putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, text)
-        var setTextSuccess = inputNode.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)
-        MessageLog.add("[AUTO] 输入文字结果: $setTextSuccess")
+        val setTextSuccess = inputNode.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)
+        var focusedAfter = inputNode.isFocused
+        MessageLog.add("[AUTO] 输入文字结果: $setTextSuccess, 输入后聚焦=$focusedAfter")
 
-        // 如果直接输入失败（企业微信输入框可能是 View），先点击聚焦，等真正输入框出现
+        // 关键：vivo/企业微信设置文字后输入框可能失焦，导致发送按钮不出现。
+        // 必须重新聚焦并点击输入框，才能唤出发送按钮。
+        if (setTextSuccess && !focusedAfter) {
+            MessageLog.add("[AUTO] 输入后失焦，重新聚焦输入框")
+            val reFocus = inputNode.performAction(AccessibilityNodeInfo.ACTION_FOCUS)
+            val reClick = inputNode.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+            focusedAfter = inputNode.isFocused
+            MessageLog.add("[AUTO] 重新聚焦结果: focus=$reFocus click=$reClick focused=$focusedAfter")
+        }
+
+        inputNode.recycle()
+        rootNode.recycle()
+
         if (!setTextSuccess) {
-            MessageLog.add("[AUTO] 直接输入失败，尝试点击输入框聚焦")
-            val focusSuccess = inputNode.performAction(AccessibilityNodeInfo.ACTION_FOCUS)
-            val clickSuccess = inputNode.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-            MessageLog.add("[AUTO] 聚焦=$focusSuccess 点击=$clickSuccess")
-
-            handler.postDelayed({
-                val freshRoot = findWeWorkWindow()
-                if (freshRoot == null) {
-                    MessageLog.add("[AUTO] 聚焦后窗口丢失")
-                    return@postDelayed
-                }
-                val newInput = findInputField(freshRoot)
-                if (newInput != null && newInput != inputNode) {
-                    MessageLog.add("[AUTO] 聚焦后出现新输入框: class=${newInput.className}")
-                    val newArgs = Bundle()
-                    newArgs.putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, text)
-                    setTextSuccess = newInput.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, newArgs)
-                    MessageLog.add("[AUTO] 新输入框输入结果: $setTextSuccess")
-                } else {
-                    MessageLog.add("[AUTO] 聚焦后输入框未变化，尝试在旧节点再次输入")
-                    val retryArgs = Bundle()
-                    retryArgs.putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, text)
-                    setTextSuccess = inputNode.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, retryArgs)
-                    MessageLog.add("[AUTO] 重试输入结果: $setTextSuccess")
-                }
-                if (setTextSuccess) {
-                    tryClickSend()
-                } else {
-                    MessageLog.add("[AUTO] 多次输入均失败，放弃")
-                }
-            }, 800)
+            MessageLog.add("[AUTO] 直接输入失败，稍后重试")
+            handler.postDelayed({ retryTypeAndSend(text) }, 800)
             return
         }
 
-        tryClickSend()
+        if (!focusedAfter) {
+            MessageLog.add("[AUTO] 警告：输入框仍未聚焦，发送按钮可能未出现")
+        }
+
+        // 增加等待时间，确保文字设置并重新聚焦后发送按钮（resource-id i_2）已经出现
+        handler.postDelayed({ tryClickSend() }, 1500)
+    }
+
+    /**
+     * 直接输入失败后重试：重新查找输入框并设置文字。
+     */
+    private fun retryTypeAndSend(text: String) {
+        val freshRoot = findWeWorkWindow()
+        if (freshRoot == null) {
+            MessageLog.add("[AUTO] 重试输入时窗口丢失")
+            finishReply()
+            return
+        }
+        val newInput = findInputField(freshRoot)
+        if (newInput == null) {
+            MessageLog.add("[AUTO] 重试时找不到输入框")
+            freshRoot.recycle()
+            finishReply()
+            return
+        }
+        val focusSuccess = newInput.performAction(AccessibilityNodeInfo.ACTION_FOCUS)
+        val clickSuccess = newInput.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+        MessageLog.add("[AUTO] 重试输入框聚焦=$focusSuccess 点击=$clickSuccess")
+
+        val newArgs = Bundle()
+        newArgs.putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, text)
+        val retrySuccess = newInput.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, newArgs)
+        val focusedAfter = newInput.isFocused
+        MessageLog.add("[AUTO] 重试输入结果: $retrySuccess, 输入后聚焦=$focusedAfter")
+
+        newInput.recycle()
+        freshRoot.recycle()
+
+        if (retrySuccess) {
+            handler.postDelayed({ tryClickSend() }, 1500)
+        } else {
+            MessageLog.add("[AUTO] 多次输入均失败，放弃")
+            finishReply()
+        }
     }
 
     private fun tryClickSend(retryCount: Int = 0) {
-        handler.postDelayed({
-            val freshRoot = findWeWorkWindow()
-            if (freshRoot == null) {
-                MessageLog.add("[AUTO] 点击发送前窗口丢失")
-                ensureBackToMessageList(attempt = 1)
-                return@postDelayed
-            }
-            val sendBtn = findSendButton(freshRoot)
-            if (sendBtn != null) {
-                val btnRect = android.graphics.Rect()
-                sendBtn.getBoundsInScreen(btnRect)
-                val centerX = (btnRect.left + btnRect.right) / 2f
-                val centerY = (btnRect.top + btnRect.bottom) / 2f
+        val freshRoot = findWeWorkWindow()
+        if (freshRoot == null) {
+            MessageLog.add("[AUTO] 点击发送前窗口丢失")
+            ensureBackToMessageList(attempt = 1)
+            finishReply()
+            return
+        }
+        val sendBtn = findSendButton(freshRoot)
+        if (sendBtn != null) {
+            val btnRect = android.graphics.Rect()
+            sendBtn.getBoundsInScreen(btnRect)
+            val centerX = (btnRect.left + btnRect.right) / 2f
+            val centerY = (btnRect.top + btnRect.bottom) / 2f
 
-                val clickSuccess = sendBtn.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-                MessageLog.add("[AUTO] 点击发送结果: $clickSuccess, bounds=$btnRect")
+            val btnText = sendBtn.text?.toString() ?: ""
+            val btnId = sendBtn.viewIdResourceName?.toString() ?: ""
+            val btnClass = sendBtn.className?.toString() ?: ""
+            MessageLog.add("[AUTO] 找到发送按钮: text='$btnText' id=$btnId class=$btnClass bounds=$btnRect")
+
+            // vivo/企业微信的 Button 对 ACTION_CLICK 常常返回 true 但不实际触发发送。
+            // 因此优先使用坐标手势点击；重试时再换 ACTION_CLICK。
+            if (retryCount == 0) {
+                MessageLog.add("[AUTO] 使用坐标点击发送: ($centerX, $centerY)")
+                clickAt(centerX, centerY)
                 sendBtn.recycle()
                 freshRoot.recycle()
-                if (clickSuccess) {
-                    handler.postDelayed({
-                        verifySendAndBack(retryCount)
-                    }, 1500)
-                } else if (retryCount < 1) {
-                    // ACTION_CLICK 对企业微信某些 Button 不生效，改用坐标手势点击
-                    MessageLog.add("[AUTO] ACTION_CLICK 失败，尝试坐标点击 ($centerX, $centerY)")
-                    clickAt(centerX, centerY)
-                    handler.postDelayed({
-                        verifySendAndBack(retryCount + 1)
-                    }, 1500)
-                } else {
-                    MessageLog.add("[AUTO] 发送最终失败，直接Back退出")
-                    ensureBackToMessageList(attempt = 1)
-                }
+                handler.postDelayed({
+                    verifySendAndBack(retryCount)
+                }, 2000)
             } else {
-                MessageLog.add("[AUTO] 找不到发送按钮")
+                val clickSuccess = sendBtn.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                MessageLog.add("[AUTO] 重试 ACTION_CLICK: $clickSuccess")
+                sendBtn.recycle()
+                freshRoot.recycle()
+                handler.postDelayed({
+                    verifySendAndBack(retryCount)
+                }, 2000)
+            }
+        } else {
+            MessageLog.add("[AUTO] 找不到发送按钮")
+            if (retryCount < 1) {
+                // 可能是输入框未聚焦导致发送按钮没出现，尝试重新聚焦输入框后再找一次
+                val inputNode = findInputField(freshRoot)
+                if (inputNode != null) {
+                    MessageLog.add("[AUTO] 尝试重新聚焦输入框以显示发送按钮")
+                    inputNode.performAction(AccessibilityNodeInfo.ACTION_FOCUS)
+                    inputNode.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                    inputNode.recycle()
+                }
+                freshRoot.recycle()
+                handler.postDelayed({ tryClickSend(retryCount + 1) }, 1200)
+            } else {
                 dumpTree(freshRoot)
                 freshRoot.recycle()
                 ensureBackToMessageList(attempt = 1)
+                finishReply()
             }
-        }, 1000)
+        }
     }
 
     /**
@@ -548,8 +669,15 @@ class WeWorkUIAutomator(private val service: AccessibilityService) {
             return
         }
         val inputNode = findInputField(root)
-        val inputText = inputNode?.text?.toString() ?: ""
-        inputNode?.recycle()
+        if (inputNode == null) {
+            MessageLog.add("[AUTO] 发送验证时找不到输入框，可能已不在聊天页")
+            root.recycle()
+            ensureBackToMessageList(attempt = 1)
+            finishReply()
+            return
+        }
+        val inputText = inputNode.text?.toString() ?: ""
+        inputNode.recycle()
         root.recycle()
 
         if (inputText.isNotBlank() && retryCount < 1) {
@@ -563,6 +691,7 @@ class WeWorkUIAutomator(private val service: AccessibilityService) {
                 MessageLog.add("[AUTO] 输入框仍有文字但已重试过，放弃")
             }
             ensureBackToMessageList(attempt = 1)
+            finishReply()
         }
     }
 
@@ -1014,29 +1143,8 @@ class WeWorkUIAutomator(private val service: AccessibilityService) {
                 node.getChild(i)?.let { deque.add(it) }
             }
         }
-        // Fallback 3: 企业微信外部群输入框可能是TextView/View，找底部最宽的节点
-        val candidates = mutableListOf<Pair<AccessibilityNodeInfo, android.graphics.Rect>>()
-        val deque2 = java.util.ArrayDeque<AccessibilityNodeInfo>()
-        deque2.add(root)
-        while (deque2.isNotEmpty()) {
-            val node = deque2.poll() ?: continue
-            val cls = node.className?.toString() ?: ""
-            if (cls.contains("EditText") || cls.contains("TextView") || cls.contains("View")) {
-                node.getBoundsInScreen(nodeRect)
-                if (nodeRect.top >= minTop && nodeRect.width() > rootRect.width() * 0.3) {
-                    candidates.add(node to android.graphics.Rect(nodeRect))
-                }
-            }
-            for (i in 0 until node.childCount) {
-                node.getChild(i)?.let { deque2.add(it) }
-            }
-        }
-        candidates.sortByDescending { it.second.width() }
-        val widest = candidates.firstOrNull()?.first
-        if (widest != null) {
-            MessageLog.add("[AUTO] 通过底部最宽节点找到输入框: class=${widest.className}")
-            return widest
-        }
+        // Fallback 3 已移除：通过底部最宽 TextView 匹配容易把消息列表底部 Tab（"消息"）
+        // 或桌面 Dock 误判为输入框，导致 auto-reply 操作跑偏。
         MessageLog.add("[AUTO] 所有方式均未找到输入框")
         return null
     }
@@ -1211,29 +1319,12 @@ class WeWorkUIAutomator(private val service: AccessibilityService) {
             return byClass
         }
 
-        // 4. Fallback: 找屏幕右下角的可点击节点
-        val candidates = mutableListOf<Pair<AccessibilityNodeInfo, android.graphics.Rect>>()
-        val deque2 = java.util.ArrayDeque<AccessibilityNodeInfo>()
-        deque2.add(root)
-        while (deque2.isNotEmpty()) {
-            val node = deque2.poll() ?: continue
-            if (node.isClickable) {
-                node.getBoundsInScreen(nodeRect)
-                if (nodeRect.left >= minLeft && nodeRect.top >= minTop) {
-                    candidates.add(node to android.graphics.Rect(nodeRect))
-                }
-            }
-            for (i in 0 until node.childCount) {
-                node.getChild(i)?.let { deque2.add(it) }
-            }
-        }
-
-        candidates.sortWith(compareBy({ it.second.top }, { it.second.left }))
-        val fallback = candidates.lastOrNull()?.first
-        if (fallback != null) {
-            MessageLog.add("[AUTO] 通过位置找到发送按钮: class=${fallback.className} id=${fallback.viewIdResourceName}")
-        }
-        return fallback
+        // 4. 旧的兜底逻辑（右下角任意可点击节点）已移除：
+        //    在 vivo 上很容易点到底部导航/工具栏，导致发送失败或退出到桌面。
+        //    如果上面 1-3 都没找到，说明发送按钮未出现（通常是输入框未聚焦），
+        //    应由调用方重新聚焦输入框后重试，而不是乱点。
+        MessageLog.add("[AUTO] 未找到符合特征的发送按钮")
+        return null
     }
 
     private fun findEditableNode(root: AccessibilityNodeInfo): AccessibilityNodeInfo? {
@@ -1267,6 +1358,10 @@ class WeWorkUIAutomator(private val service: AccessibilityService) {
     }
 
     private fun launchWeWork() {
+        if (!WeWorkAccessibilityService.isMonitoringEnabled()) {
+            MessageLog.add("[AUTO] 监控已停止，不启动企业微信")
+            return
+        }
         try {
             // 先让 ChaserPA 自己回到前台，绕过 Android 10+ 后台启动 Activity 限制
             val selfIntent = service.packageManager.getLaunchIntentForPackage(service.packageName)

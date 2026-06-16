@@ -66,6 +66,12 @@ class ReplyWorker(
     private fun doPoll() {
         if (!isRunning) return
 
+        if (!WeWorkAccessibilityService.isMonitoringEnabled()) {
+            MessageLog.add("[REPLY-WORKER] 监控已停止，跳过本次轮询")
+            scheduleNext()
+            return
+        }
+
         if (isProcessing) {
             MessageLog.add("[REPLY-WORKER] 正在处理上一条，跳过")
             scheduleNext()
@@ -164,6 +170,13 @@ class ReplyWorker(
     }
 
     private fun executeReply(reply: ReplyQueue.PendingReply) {
+        if (!WeWorkAccessibilityService.isMonitoringEnabled()) {
+            MessageLog.add("[REPLY-WORKER] 监控已停止，放弃执行回复")
+            isProcessing = false
+            scheduleNext(500)
+            return
+        }
+
         val age = System.currentTimeMillis() - reply.timestamp
         if (age > MSG_MAX_AGE_MS) {
             MessageLog.add("[REPLY-WORKER] 消息已过期(${age / 1000}s)，丢弃: ${reply.groupName}")
@@ -175,13 +188,11 @@ class ReplyWorker(
         isProcessing = true
         UiController.acquire()
 
-        uiAutomator.sendReply(reply.groupName, reply.replyText)
-
-        handler.postDelayed({
+        uiAutomator.sendReply(reply.groupName, reply.replyText) {
             isProcessing = false
             UiController.release()
             MessageLog.add("[REPLY-WORKER] 回复完成: ${reply.groupName}")
             scheduleNext()
-        }, REPLY_COOLDOWN_MS)
+        }
     }
 }

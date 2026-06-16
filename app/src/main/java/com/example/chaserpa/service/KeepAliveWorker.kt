@@ -13,7 +13,7 @@ class KeepAliveWorker(private val service: AccessibilityService) {
 
     companion object {
         private const val PACKAGE_WEWORK = "com.tencent.wework"
-        private const val CHECK_INTERVAL_MS = 15000L // 15秒检测一次，避免过于频繁干扰正常操作
+        private const val CHECK_INTERVAL_MS = 180000L // 3分钟检测一次，减少对用户操作的干扰
         private const val MISSING_THRESHOLD = 2 // 连续2次检测不到才恢复，减少误判
     }
 
@@ -25,7 +25,7 @@ class KeepAliveWorker(private val service: AccessibilityService) {
         if (isRunning) return
         isRunning = true
         missingCount = 0
-        MessageLog.add("[KEEPALIVE] 保活机制已启动，间隔=${CHECK_INTERVAL_MS}ms")
+        MessageLog.add("[KEEPALIVE] 保活机制已启动，间隔=${CHECK_INTERVAL_MS/60000}分钟")
         scheduleCheck()
     }
 
@@ -43,6 +43,13 @@ class KeepAliveWorker(private val service: AccessibilityService) {
 
     private fun doCheck() {
         if (!isRunning) return
+
+        // 如果监控已停止，不再执行保活恢复
+        if (!WeWorkAccessibilityService.isMonitoringEnabled()) {
+            MessageLog.add("[KEEPALIVE] 监控已停止，跳过本次检查")
+            scheduleCheck()
+            return
+        }
 
         // 如果 UIPollingCollector 或 ReplyWorker 正在操作 UI，跳过本次检查
         if (UiController.isBusy) {
@@ -100,6 +107,10 @@ class KeepAliveWorker(private val service: AccessibilityService) {
     }
 
     private fun launchWeWork() {
+        if (!WeWorkAccessibilityService.isMonitoringEnabled()) {
+            MessageLog.add("[KEEPALIVE] 监控已停止，不启动企业微信")
+            return
+        }
         try {
             val intent = service.packageManager.getLaunchIntentForPackage(PACKAGE_WEWORK)
             if (intent != null) {

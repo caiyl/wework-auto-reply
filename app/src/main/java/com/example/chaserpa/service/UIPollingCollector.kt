@@ -55,6 +55,10 @@ class UIPollingCollector(
 
         private const val MAX_SCAN_ITEMS = 10
         private const val MSG_MAX_AGE_MS = 300_000L // 5分钟
+        private const val MAX_CHAT_READ_MS = 20_000L // 进群读取整体超时 20 秒
+
+        // 跨 UIPollingCollector 实例保留消息列表快照，避免 Worker 重启后重复触发同一消息
+        private var persistedListSnapshot: Map<String, Pair<String, String>> = emptyMap()
 
         /**
          * 解析企业微信UI时间字符串为时间戳（毫秒）
@@ -127,14 +131,23 @@ class UIPollingCollector(
         isRunning = true
         currentInterval = config.pollInterval.toLong().coerceAtLeast(500L)
         consecutiveIdle = 0
-        MessageLog.add("[POLL] UI polling started, interval=${currentInterval}ms")
+        // 恢复上次快照，避免 Worker 重启后重复触发同一消息
+        synchronized(listSnapshot) {
+            listSnapshot.clear()
+            listSnapshot.putAll(persistedListSnapshot)
+        }
+        MessageLog.add("[POLL] UI polling started, interval=${currentInterval}ms, snapshotSize=${persistedListSnapshot.size}")
         scheduleNext()
     }
 
     fun stop() {
         isRunning = false
         // 不清空 handler，让正在执行的 readChatDetail/checkRunnable 能正常完成
-        MessageLog.add("[POLL] UI polling stopped")
+        // 保存当前快照，供下次 start() 恢复，避免重复触发
+        synchronized(listSnapshot) {
+            persistedListSnapshot = listSnapshot.toMap()
+        }
+        MessageLog.add("[POLL] UI polling stopped, snapshotSize=${persistedListSnapshot.size}")
     }
 
     private fun scheduleNext() {
@@ -144,6 +157,11 @@ class UIPollingCollector(
 
     private fun doPoll() {
         if (!isRunning) return
+        if (!WeWorkAccessibilityService.isMonitoringEnabled()) {
+            MessageLog.add("[POLL] 监控已停止，跳过本次轮询")
+            scheduleNext()
+            return
+        }
         if (UiController.isBusy) {
             MessageLog.add("[POLL] UI busy, skip poll")
             scheduleNext()
@@ -282,10 +300,15 @@ class UIPollingCollector(
     }
 
     private fun readChatDetail(groupName: String) {
+        if (!WeWorkAccessibilityService.isMonitoringEnabled()) {
+            MessageLog.add("[POLL] 监控已停止，不读取群详情")
+            return
+        }
         if (!UiController.acquire()) {
             MessageLog.add("[POLL] readChatDetail skipped: UI is busy")
             return
         }
+        val readStartTime = System.currentTimeMillis()
         MessageLog.add("[POLL] readChatDetail start for '$groupName'")
 
         val root = findWeWorkRoot()
@@ -372,15 +395,23 @@ class UIPollingCollector(
         // Step 2: wait for chat detail page with retry
         // vivo 系统 Activity 启动慢，需要更长的等待时间和更多重试
         var retries = 12
+        var skipCache = false
         val checkRunnable = object : Runnable {
             override fun run() {
-                MessageLog.add("[POLL] checkRunnable: retries left=$retries, finding WeWork root...")
-                // 页面切换期间必须跳过缓存，否则可能拿到旧窗口（消息列表页而非聊天页）
-                val chatRoot = findWeWorkRoot(skipCache = true)
+                val elapsed = System.currentTimeMillis() - readStartTime
+                if (elapsed > MAX_CHAT_READ_MS) {
+                    MessageLog.add("[POLL] readChatDetail: 整体超时 ${elapsed}ms，放弃并释放锁")
+                    ensureBackToMessageListThenRelease()
+                    return
+                }
+                MessageLog.add("[POLL] checkRunnable: retries left=$retries, elapsed=${elapsed}ms, finding WeWork root...")
+                // 先尝试缓存（vivo rootInActiveWindow 不可靠），如果缓存不是聊天页再用 skipCache
+                var chatRoot = findWeWorkRoot(skipCache = skipCache)
                 if (chatRoot == null) {
                     MessageLog.add("[POLL] checkRunnable: findWeWorkRoot returned null")
                     if (retries > 0) {
                         retries--
+                        skipCache = true
                         handler.postDelayed(this, 1200)
                         return
                     }
@@ -393,15 +424,15 @@ class UIPollingCollector(
                 val inChat = isInChatScreen(chatRoot, groupName)
                 MessageLog.add("[POLL] checkRunnable: isInChatScreen=$inChat")
                 if (!inChat) {
+                    chatRoot.recycle()
                     if (retries > 0) {
                         retries--
-                        chatRoot.recycle()
+                        skipCache = true
                         MessageLog.add("[POLL] checkRunnable: not in chat yet, will retry")
                         handler.postDelayed(this, 1200)
                         return
                     }
                     MessageLog.add("[POLL] readChatDetail: not in chat screen after retries, abort")
-                    chatRoot.recycle()
                     ensureBackToMessageListThenRelease()
                     return
                 }
@@ -414,7 +445,7 @@ class UIPollingCollector(
                 }
                 chatRoot.recycle()
 
-                // Step 5: return to message list
+                // Step 5: return to message列表
                 // vivo 上按 Back 可能直接退出企业微信回到桌面。
                 // 群聊页没有底部"消息"Tab，正确方式是点击左上角返回按钮。
                 handler.postDelayed({
@@ -789,8 +820,10 @@ class UIPollingCollector(
 
         val windows = service.windows
         val fetchedRoots = mutableListOf<AccessibilityNodeInfo>()
-        var bestRoot: AccessibilityNodeInfo? = null
-        var bestChildCount = 0
+        var chatRoot: AccessibilityNodeInfo? = null
+        var listRoot: AccessibilityNodeInfo? = null
+        var fallbackRoot: AccessibilityNodeInfo? = null
+        var fallbackChildCount = 0
         var weWorkWindowCount = 0
         try {
             for (window in windows) {
@@ -801,17 +834,26 @@ class UIPollingCollector(
                     val recyclerNodes = root.findAccessibilityNodeInfosByViewId(ID_RECYCLER_VIEW)
                     val hasMainRecycler = recyclerNodes.isNotEmpty()
                     recyclerNodes.forEach { it.recycle() }
-                    if (hasMainRecycler) {
-                        bestRoot = root
-                        bestChildCount = Int.MAX_VALUE
-                    } else if (root.childCount > bestChildCount) {
-                        bestRoot = root
-                        bestChildCount = root.childCount
+                    val inputNode = findInputField(root)
+                    val hasInput = inputNode != null
+                    inputNode?.recycle()
+
+                    if (hasInput && chatRoot == null) {
+                        // 聊天页优先（有输入框无 RecyclerView 或两者都有）
+                        chatRoot = root
+                    } else if (hasMainRecycler && listRoot == null) {
+                        // 消息列表页
+                        listRoot = root
+                    } else if (root.childCount > fallbackChildCount) {
+                        // 兜底：选子节点最多的窗口
+                        fallbackRoot = root
+                        fallbackChildCount = root.childCount
                     }
                 }
             }
+            val bestRoot = chatRoot ?: listRoot ?: fallbackRoot
             fetchedRoots.remove(bestRoot)
-            MessageLog.add("[POLL] findWeWorkRoot: windows=${windows.size} weWorkWindows=$weWorkWindowCount bestRoot=${bestRoot != null} childCount=$bestChildCount")
+            MessageLog.add("[POLL] findWeWorkRoot: windows=${windows.size} weWorkWindows=$weWorkWindowCount bestRoot=${bestRoot != null} chatRoot=${chatRoot != null} listRoot=${listRoot != null} fallback=$fallbackChildCount")
             return bestRoot
         } finally {
             fetchedRoots.forEach { it.recycle() }

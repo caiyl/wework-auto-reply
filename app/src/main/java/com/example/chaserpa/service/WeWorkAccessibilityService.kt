@@ -34,6 +34,12 @@ class WeWorkAccessibilityService : AccessibilityService() {
                 svc.applyMonitoringState(enabled)
             }
         }
+
+        /**
+         * 查询当前监控开关状态，Worker/Automator 在操作前调用，
+         * 避免停止监控后仍触发轮询、保活、UI 自动化等行为。
+         */
+        fun isMonitoringEnabled(): Boolean = instance?.monitoringEnabled ?: false
     }
 
     private lateinit var configRepository: ConfigRepository
@@ -129,6 +135,7 @@ class WeWorkAccessibilityService : AccessibilityService() {
         Log.i(TAG, "applyMonitoringState: enabled=$enabled, foreground=$isChaserpaForeground")
         if (enabled) {
             MessageLog.add("[SYS] 监控已开启")
+            UiController.setEnabled(true)
             if (isChaserpaForeground) {
                 MessageLog.add("[SYS] 当前在配置页，Worker 暂不启动")
                 Log.i(TAG, "ChaserPA in foreground, workers not started")
@@ -138,6 +145,7 @@ class WeWorkAccessibilityService : AccessibilityService() {
             }
         } else {
             MessageLog.add("[SYS] 监控已暂停")
+            UiController.setEnabled(false)
             stopAllWorkers()
         }
     }
@@ -174,7 +182,12 @@ class WeWorkAccessibilityService : AccessibilityService() {
                         break
                     }
                 }
-                latestWeWorkRoot = root
+                if (root != null) {
+                    // 复制一份再缓存，避免系统回收后使用失效节点
+                    val oldRoot = latestWeWorkRoot
+                    latestWeWorkRoot = AccessibilityNodeInfo.obtain(root)
+                    oldRoot?.recycle()
+                }
             }
         }
 
@@ -211,6 +224,8 @@ class WeWorkAccessibilityService : AccessibilityService() {
         Log.i(TAG, "Accessibility service destroyed")
         isRunning = false
         instance = null
+        latestWeWorkRoot?.recycle()
+        latestWeWorkRoot = null
         uiPollingCollector?.stop()
         replyWorker?.stop()
         keepAliveWorker?.stop()
