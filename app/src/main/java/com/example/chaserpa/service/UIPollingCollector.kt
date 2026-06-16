@@ -10,6 +10,25 @@ import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Locale
 
+/**
+ * UI 轮询采集器。
+ *
+ * 这个类通过无障碍服务定时遍历企业微信的 UI 树，从消息列表和群聊详情页中提取消息。
+ * 主要用于弥补 NotificationEventCollector 的不足：
+ * 1. 企业微信在前台运行时通常不会弹出通知；
+ * 2. 部分 ROM（如 vivo ColorOS）在息屏或后台时通知事件可能丢失。
+ *
+ * 工作流程：
+ * 1. 定时查找企业微信窗口；
+ * 2. 扫描消息列表 RecyclerView，发现目标群有新消息摘要时点击进入；
+ * 3. 在群聊详情页提取最新消息；
+ * 4. 返回消息列表，继续下一轮。
+ *
+ * Kotlin 语法提示：
+ * - 构造函数中的 onMessage: (MessagePusher.WeWorkMessage) -> Unit 是一个函数类型参数，
+ *   作为消息提取后的回调。
+ * - autoReplyOrchestrator: AutoReplyOrchestrator? = null 表示可选参数，默认 null。
+ */
 class UIPollingCollector(
     private val service: AccessibilityService,
     private val config: ConfigRepository,
@@ -32,7 +51,7 @@ class UIPollingCollector(
         private const val ID_RECYCLER_VIEW = "com.tencent.wework:id/czp"
         /** 列表项中的群名 TextView，如 "智能客服测试2群" */
         private const val ID_GROUP_NAME = "com.tencent.wework:id/hrr"
-        /** 列表项中的时间 TextView，如 "昨天"、"12分钟前" */
+        /** 列表项中的时间 TextView，如 "昨天”、“12分钟前" */
         private const val ID_TIME = "com.tencent.wework:id/g80"
         /** 列表项中的消息摘要 TextView，如 "chase: 7787" */
         private const val ID_MESSAGE_SUMMARY = "com.tencent.wework:id/mdj"
@@ -42,7 +61,7 @@ class UIPollingCollector(
         private const val ID_CHAT_LISTVIEW = "com.tencent.wework:id/iju"
         /** 消息气泡中的内容 TextView，如 "1440850817590，诊断一下" */
         private const val ID_CHAT_CONTENT = "com.tencent.wework:id/i9j"
-        /** 时间分隔 TextView，如 "昨天  9:30"、"此群为外部群，了解更多" */
+        /** 时间分隔 TextView，如 "昨天  9:30”、“此群为外部群，了解更多" */
         private const val ID_CHAT_TIME = "com.tencent.wework:id/i_d"
 
         // 昵称节点（如 "chase"、"＠微信"）没有 resource-id（resource-id=""），
@@ -63,6 +82,11 @@ class UIPollingCollector(
         /**
          * 解析企业微信UI时间字符串为时间戳（毫秒）
          * 支持格式: "刚刚", "X分钟前", "HH:mm", "昨天", "yyyy/MM/dd"
+         *
+         * Kotlin 语法提示：
+         * - when 是多分支表达式，类似 Java 的 switch，但更强大。
+         * - timeStr.endsWith("分钟前") 是 Kotlin 字符串扩展函数。
+         * - toIntOrNull() 尝试把字符串转整数，失败返回 null，配合 ?: return null 安全退出。
          */
         fun parseUiTime(timeStr: String): Long? {
             val now = System.currentTimeMillis()
@@ -105,25 +129,34 @@ class UIPollingCollector(
             }
         }
 
+        /**
+         * 判断消息是否太旧。
+         * 无法解析的时间（如"昨天"、未知格式）一律视为旧消息，保守过滤。
+         */
         fun isMessageTooOld(msgTime: Long?): Boolean {
-            // 无法解析的时间（如"昨天"、未知格式）一律视为旧消息，保守过滤
             if (msgTime == null) return true
             return System.currentTimeMillis() - msgTime > MSG_MAX_AGE_MS
         }
     }
 
+    // Handler 用于主线程调度轮询
     private val handler = Handler(Looper.getMainLooper())
     // 使用专门的 Runnable 实例作为轮询 token，start() 只移除它，保留 readChatDetail 的 checkRunnable
     private val pollRunnable = Runnable { doPoll() }
     @Volatile
     private var isRunning = false
+    // 消息列表快照：群名 -> (消息摘要, 时间)
     private val listSnapshot = mutableMapOf<String, Pair<String, String>>()
     private val groupTimeMap = mutableMapOf<String, String>()
     private var currentInterval = config.pollInterval.toLong()
+    // 连续空闲轮询次数，用于自适应频率
     private var consecutiveIdle = 0
 
     fun isRunning(): Boolean = isRunning
 
+    /**
+     * 启动轮询。
+     */
     fun start() {
         if (isRunning) return
         // 只移除轮询 callback，保留 readChatDetail 的 checkRunnable 让它完成
@@ -140,6 +173,9 @@ class UIPollingCollector(
         scheduleNext()
     }
 
+    /**
+     * 停止轮询。
+     */
     fun stop() {
         isRunning = false
         // 不清空 handler，让正在执行的 readChatDetail/checkRunnable 能正常完成
@@ -155,6 +191,9 @@ class UIPollingCollector(
         handler.postDelayed(pollRunnable, currentInterval)
     }
 
+    /**
+     * 单次轮询主逻辑。
+     */
     private fun doPoll() {
         if (!isRunning) return
         if (!WeWorkAccessibilityService.isMonitoringEnabled()) {
@@ -234,6 +273,9 @@ class UIPollingCollector(
         scheduleNext()
     }
 
+    /**
+     * 扫描消息列表，发现目标群新消息后进入群聊详情读取。
+     */
     private fun scanMessageList(root: AccessibilityNodeInfo): Boolean {
         val recyclerViewNodes = root.findAccessibilityNodeInfosByViewId(ID_RECYCLER_VIEW)
         val recyclerView = recyclerViewNodes.firstOrNull() ?: run {
@@ -299,6 +341,9 @@ class UIPollingCollector(
         return hasNewMessage
     }
 
+    /**
+     * 进入指定群聊详情页并提取最新消息。
+     */
     private fun readChatDetail(groupName: String) {
         if (!WeWorkAccessibilityService.isMonitoringEnabled()) {
             MessageLog.add("[POLL] 监控已停止，不读取群详情")
@@ -467,6 +512,9 @@ class UIPollingCollector(
         handler.postDelayed(checkRunnable, 1500)
     }
 
+    /**
+     * 判断当前是否在指定群聊页。
+     */
     private fun isInChatScreen(root: AccessibilityNodeInfo, groupName: String): Boolean {
         val titleNodes = root.findAccessibilityNodeInfosByText(groupName)
         val rootRect = android.graphics.Rect()
@@ -493,6 +541,9 @@ class UIPollingCollector(
         return hasTitle && hasInput
     }
 
+    /**
+     * 判断节点是否位于 RecyclerView/ListView 内部。
+     */
     private fun isNodeInRecyclerView(node: AccessibilityNodeInfo): Boolean {
         val parentsToRecycle = mutableListOf<AccessibilityNodeInfo>()
         var current: AccessibilityNodeInfo? = node
@@ -516,8 +567,6 @@ class UIPollingCollector(
     /**
      * 查找群聊页输入框。
      * vivo 版本 hint 为 "发消息或按住..."（resource-id: i_6，class: EditText）。
-     * 由于 findAccessibilityNodeInfosByText 是包含匹配，"发消息" 理论上可匹配到
-     * "发消息或按住..."，但此处使用精确匹配（== hint），故需配合 EditText fallback。
      */
     private fun findInputField(root: AccessibilityNodeInfo): AccessibilityNodeInfo? {
         // 旧版本 hint: "发消息" / "添加消息内容" / "输入消息" / "请输入消息"
@@ -561,6 +610,9 @@ class UIPollingCollector(
         return null
     }
 
+    /**
+     * 从群聊详情页提取最新消息。
+     */
     private fun extractChatMessages(
         root: AccessibilityNodeInfo,
         groupName: String
@@ -569,7 +621,7 @@ class UIPollingCollector(
         val extracted = mutableListOf<Pair<MessagePusher.WeWorkMessage, String>>()
         val nodesToRecycle = mutableListOf<AccessibilityNodeInfo>()
 
-        // 策略1: 尝试按消息气泡结构精确解析（ListView id=iis + 子项 RelativeLayout）
+        // 策略1: 尝试按消息气泡结构精确解析（ListView id=iju + 子项 RelativeLayout）
         val chatListNodes = root.findAccessibilityNodeInfosByViewId(ID_CHAT_LISTVIEW)
         val chatList = chatListNodes.firstOrNull()
         if (chatList != null) {
@@ -578,7 +630,7 @@ class UIPollingCollector(
                 val bubble = chatList.getChild(i) ?: continue
                 nodesToRecycle.add(bubble)
 
-                // 1) 用 viewId 递归查找消息内容（i8u 嵌套在第6层）
+                // 1) 用 viewId 递归查找消息内容（i9j 嵌套在第6层）
                 val contentNodes = bubble.findAccessibilityNodeInfosByViewId(ID_CHAT_CONTENT)
                 val content = contentNodes.firstOrNull()?.text?.toString()
                 nodesToRecycle.addAll(contentNodes)
@@ -738,6 +790,9 @@ class UIPollingCollector(
         return false
     }
 
+    /**
+     * 在指定窗口中查找并点击底部"消息"Tab。
+     */
     private fun navigateToMessageTab(root: AccessibilityNodeInfo): Boolean {
         val rootRect = android.graphics.Rect()
         root.getBoundsInScreen(rootRect)
@@ -787,6 +842,8 @@ class UIPollingCollector(
     }
 
     /**
+     * 查找企业微信主窗口。
+     *
      * @param skipCache 页面切换期间（如 readChatDetail 的 checkRunnable）应设为 true，
      *                  避免 WeWorkAccessibilityService.latestWeWorkRoot 缓存未及时更新导致拿到旧窗口。
      */
@@ -802,6 +859,7 @@ class UIPollingCollector(
                 val hasMain = hasMainContent(cached)
                 if (hasMain) {
                     MessageLog.add("[POLL] findWeWorkRoot: using cached root")
+                    // AccessibilityNodeInfo.obtain(cached) 创建一份拷贝，避免多线程竞争回收
                     return AccessibilityNodeInfo.obtain(cached)
                 }
             }
@@ -913,6 +971,9 @@ class UIPollingCollector(
         }, 800)
     }
 
+    /**
+     * 启动企业微信。
+     */
     private fun launchWeWork() {
         try {
             val intent = service.packageManager.getLaunchIntentForPackage(PACKAGE_WEWORK)

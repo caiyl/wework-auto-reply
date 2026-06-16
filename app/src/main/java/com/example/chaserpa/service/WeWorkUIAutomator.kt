@@ -9,6 +9,28 @@ import android.os.Looper
 import android.util.Log
 import android.view.accessibility.AccessibilityNodeInfo
 
+/**
+ * 企业微信 UI 自动化操作器。
+ *
+ * 这个类封装了所有对企业微信界面的模拟操作，包括：
+ * 1. 查找企业微信主窗口；
+ * 2. 在消息列表中定位目标群聊；
+ * 3. 进入群聊页、输入文字、点击发送；
+ * 4. 发送失败后重试、紧急恢复等。
+ *
+ * 它通过 AccessibilityService 提供的 API 遍历 UI 树（AccessibilityNodeInfo），
+ * 模拟点击、设置文本、执行手势等操作。
+ *
+ * 重要概念：
+ * - AccessibilityNodeInfo：无障碍节点，代表屏幕上的一个 UI 元素，包含文字、位置、是否可点击等信息。
+ * - resource-id：开发者给 View 设置的唯一标识，类似 HTML 的 id。
+ * - recycle()：AccessibilityNodeInfo 是系统资源，用完必须调用 recycle() 释放，否则内存泄漏。
+ *
+ * Kotlin 语法提示：
+ * - class WeWorkUIAutomator(private val service: AccessibilityService) 是主构造函数写法，
+ *   private val 表示该参数同时是类的私有只读属性。
+ * - 大量使用了 Lambda、?.let、?:、when 等 Kotlin 语法糖，注释中会逐步解释。
+ */
 class WeWorkUIAutomator(private val service: AccessibilityService) {
 
     companion object {

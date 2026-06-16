@@ -6,10 +6,39 @@ import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import com.example.chaserpa.data.ConfigRepository
 
+/**
+ * 企业微信无障碍服务。
+ *
+ * 这是整个 App 的核心后台服务，继承自 Android 的 AccessibilityService。
+ * 当用户在系统设置中开启本服务的无障碍权限后，系统会把企业微信等应用的
+ * 界面变化事件（通知、窗口切换、内容变化等）回调到这里。
+ *
+ * 主要职责：
+ * 1. 监听无障碍事件，判断企业微信前后台状态；
+ * 2. 缓存企业微信最新 UI 树根节点（部分 ROM 的 rootInActiveWindow 不可靠）；
+ * 3. 管理 MessageCollector、UIPollingCollector、ReplyWorker、KeepAliveWorker 的启停；
+ * 4. 提供全局单例访问和监控开关状态查询。
+ *
+ * Kotlin 语法提示：
+ * - class WeWorkAccessibilityService : AccessibilityService() 表示继承，
+ *   类似 Java 的 extends AccessibilityService。
+ * - 类名后面没有主构造函数，因为 AccessibilityService 由系统通过无参构造创建。
+ */
 class WeWorkAccessibilityService : AccessibilityService() {
 
+    /**
+     * 伴生对象，提供全局访问点。
+     *
+     * Kotlin 语法提示：
+     * - companion object 中的属性/方法类似 Java 的 static。
+     * - @Volatile 保证多线程可见性。
+     * - var isRunning: Boolean = false
+     *       private set
+     *   表示该属性对外只读，只能在类内部修改。
+     */
     companion object {
         private const val TAG = "WeWorkAccessibilityService"
+
         @Volatile
         var isRunning: Boolean = false
             private set
@@ -42,12 +71,22 @@ class WeWorkAccessibilityService : AccessibilityService() {
         fun isMonitoringEnabled(): Boolean = instance?.monitoringEnabled ?: false
     }
 
+    /**
+     * lateinit 延迟初始化属性。
+     *
+     * Kotlin 语法提示：
+     * - lateinit var 表示“延迟初始化”：声明时不需要赋值，但使用前必须初始化，否则会抛异常。
+     * - 适合在 onServiceConnected 这类生命周期回调中初始化的场景。
+     * - 判断是否已经初始化：::property.isInitialized
+     */
     private lateinit var configRepository: ConfigRepository
     private lateinit var deduplicator: MessageDeduplicator
     private lateinit var messagePusher: MessagePusher
     private lateinit var messageCollector: MessageCollector
     private lateinit var uiAutomator: WeWorkUIAutomator
     private lateinit var autoReplyOrchestrator: AutoReplyOrchestrator
+
+    // 可空类型，用 ? 表示，不需要在构造函数中初始化
     private var uiPollingCollector: UIPollingCollector? = null
     private var replyWorker: ReplyWorker? = null
     private var keepAliveWorker: KeepAliveWorker? = null
@@ -58,6 +97,12 @@ class WeWorkAccessibilityService : AccessibilityService() {
     @Volatile
     private var isChaserpaForeground = false
 
+    /**
+     * 无障碍服务连接成功时回调。
+     *
+     * 这是服务的入口，相当于 Activity 的 onCreate。
+     * 在这里初始化所有组件，并根据当前监控开关状态启动/暂停 Worker。
+     */
     override fun onServiceConnected() {
         super.onServiceConnected()
         Log.i(TAG, "Accessibility service connected")
@@ -84,6 +129,7 @@ class WeWorkAccessibilityService : AccessibilityService() {
         )
 
         val myNickname = configRepository.myNickname
+        // 消息被采集后的统一处理回调
         val onMessageCollected: (MessagePusher.WeWorkMessage) -> Unit = { message ->
             // 过滤自己发送的消息，防止死循环
             if (myNickname.isNotEmpty() && message.sender == myNickname) {
@@ -130,6 +176,9 @@ class WeWorkAccessibilityService : AccessibilityService() {
         applyMonitoringState(monitoringEnabled)
     }
 
+    /**
+     * 应用监控开关状态。
+     */
     private fun applyMonitoringState(enabled: Boolean) {
         monitoringEnabled = enabled
         Log.i(TAG, "applyMonitoringState: enabled=$enabled, foreground=$isChaserpaForeground")
@@ -165,6 +214,11 @@ class WeWorkAccessibilityService : AccessibilityService() {
         autoReplyOrchestrator.clear()
     }
 
+    /**
+     * 收到无障碍事件时回调。
+     *
+     * 这是服务最核心的回调，所有企业微信的界面变化都会进入这里。
+     */
     override fun onAccessibilityEvent(event: AccessibilityEvent) {
         val pkg = event.packageName?.toString()
 
@@ -173,6 +227,7 @@ class WeWorkAccessibilityService : AccessibilityService() {
             val source = event.source
             if (source != null) {
                 var root: AccessibilityNodeInfo? = source
+                // 沿父节点上溯到根节点
                 while (root != null) {
                     val parent = root.parent
                     if (parent != null) {
@@ -219,6 +274,9 @@ class WeWorkAccessibilityService : AccessibilityService() {
         Log.w(TAG, "Accessibility service interrupted")
     }
 
+    /**
+     * 服务销毁时回调。
+     */
     override fun onDestroy() {
         super.onDestroy()
         Log.i(TAG, "Accessibility service destroyed")
@@ -229,6 +287,7 @@ class WeWorkAccessibilityService : AccessibilityService() {
         uiPollingCollector?.stop()
         replyWorker?.stop()
         keepAliveWorker?.stop()
+        // 使用 ::property.isInitialized 判断 lateinit 属性是否已初始化，避免未初始化就访问
         if (::messageCollector.isInitialized) {
             messageCollector.destroy()
         }

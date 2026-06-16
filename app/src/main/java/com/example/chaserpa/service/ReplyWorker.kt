@@ -16,7 +16,14 @@ import java.io.IOException
 import java.util.concurrent.TimeUnit
 
 /**
- * 独立回复轮询线程，定时从后台 HTTP 拉取待回复消息，并通过 WeWorkUIAutomator 执行 UI 回复。
+ * 回复轮询 Worker。
+ *
+ * 这是一个独立轮询器，定时从后台 HTTP 接口拉取待回复消息，
+ * 然后通过 WeWorkUIAutomator 在企业微信中执行自动回复。
+ *
+ * 与 MessagePusher 的同步回调不同：
+ * - MessagePusher 在推送消息时如果后台立即返回 reply，这里只记录日志不执行；
+ * - 真正的回复由 ReplyWorker 异步拉取后串行执行，避免多个回复并发导致 UI 混乱。
  */
 class ReplyWorker(
     private val service: AccessibilityService,
@@ -25,12 +32,18 @@ class ReplyWorker(
 ) {
     companion object {
         private const val TAG = "ReplyWorker"
+        // 默认轮询间隔 5 秒
         private const val DEFAULT_INTERVAL_MS = 5000L
+        // 两次回复之间的冷却时间，防止界面动画冲突
         private const val REPLY_COOLDOWN_MS = 6000L
-        private const val MSG_MAX_AGE_MS = 600_000L // 10分钟
+        // 消息最大存活时间：10 分钟，过期丢弃
+        private const val MSG_MAX_AGE_MS = 600_000L
     }
 
+    // Handler 用于主线程调度轮询
     private val handler = Handler(Looper.getMainLooper())
+
+    // OkHttp 客户端，用于拉取后台待回复消息
     private val client = OkHttpClient.Builder()
         .connectTimeout(10, TimeUnit.SECONDS)
         .readTimeout(10, TimeUnit.SECONDS)
@@ -44,6 +57,7 @@ class ReplyWorker(
     fun start() {
         if (isRunning) return
         isRunning = true
+        // coerceAtLeast(2000L) 保证最小 2 秒间隔，避免过于频繁
         val interval = config.replyPollInterval.toLong().coerceAtLeast(2000L)
         MessageLog.add("[REPLY-WORKER] 已启动，轮询间隔=${interval}ms")
         scheduleNext(interval)
@@ -56,13 +70,26 @@ class ReplyWorker(
         MessageLog.add("[REPLY-WORKER] 已停止")
     }
 
+    /**
+     * 是否正在忙（处理中或队列非空）。
+     */
     fun isBusy(): Boolean = isProcessing || !ReplyQueue.isEmpty()
 
+    /**
+     * 安排下一次轮询。
+     *
+     * Kotlin 语法提示：
+     * - scheduleNext(delayMs: Long = ...) 是带默认参数的私有方法。
+     * - handler.postDelayed({ doPoll() }, delayMs) 用 Lambda 创建 Runnable。
+     */
     private fun scheduleNext(delayMs: Long = config.replyPollInterval.toLong().coerceAtLeast(2000L)) {
         if (!isRunning) return
         handler.postDelayed({ doPoll() }, delayMs)
     }
 
+    /**
+     * 执行一次轮询。
+     */
     private fun doPoll() {
         if (!isRunning) return
 
@@ -102,6 +129,9 @@ class ReplyWorker(
         fetchFromBackend(url)
     }
 
+    /**
+     * 从后台拉取待回复消息。
+     */
     private fun fetchFromBackend(url: String) {
         val requestBuilder = Request.Builder().url(url).get()
         if (config.apiKey.isNotEmpty()) {
@@ -112,6 +142,7 @@ class ReplyWorker(
             override fun onFailure(call: Call, e: IOException) {
                 Log.w(TAG, "Fetch replies failed: ${e.message}")
                 MessageLog.add("[REPLY-WORKER] 拉取失败: ${e.message}")
+                // 回调在 OkHttp 后台线程，切回主线程再 scheduleNext
                 handler.post { scheduleNext() }
             }
 
@@ -145,6 +176,9 @@ class ReplyWorker(
         })
     }
 
+    /**
+     * 解析后台返回的 JSON，支持多种常见字段名。
+     */
     private fun parseReplies(body: String): List<ReplyQueue.PendingReply> {
         val json = JSONObject(body)
         val array: JSONArray = when {
@@ -157,8 +191,10 @@ class ReplyWorker(
         val result = mutableListOf<ReplyQueue.PendingReply>()
         for (i in 0 until array.length()) {
             val obj = array.getJSONObject(i)
+            // 兼容多种字段名：groupName / group
             val groupName = obj.optString("groupName")
                 .ifEmpty { obj.optString("group") }
+            // 兼容多种字段名：replyText / text / content
             val replyText = obj.optString("replyText")
                 .ifEmpty { obj.optString("text") }
                 .ifEmpty { obj.optString("content") }
@@ -169,6 +205,9 @@ class ReplyWorker(
         return result
     }
 
+    /**
+     * 执行一条回复。
+     */
     private fun executeReply(reply: ReplyQueue.PendingReply) {
         if (!WeWorkAccessibilityService.isMonitoringEnabled()) {
             MessageLog.add("[REPLY-WORKER] 监控已停止，放弃执行回复")
@@ -177,6 +216,7 @@ class ReplyWorker(
             return
         }
 
+        // 检查消息是否过期
         val age = System.currentTimeMillis() - reply.timestamp
         if (age > MSG_MAX_AGE_MS) {
             MessageLog.add("[REPLY-WORKER] 消息已过期(${age / 1000}s)，丢弃: ${reply.groupName}")
@@ -186,8 +226,16 @@ class ReplyWorker(
 
         MessageLog.add("[REPLY-WORKER] 开始回复: ${reply.groupName} -> ${reply.replyText.take(30)}")
         isProcessing = true
+        // 获取 UI 操作锁
         UiController.acquire()
 
+        /**
+         * 调用 UI 自动化器发送回复，传入完成回调。
+         *
+         * Kotlin 语法提示：
+         * - uiAutomator.sendReply(...) { ... } 是尾随 Lambda，
+         *   最后一个参数是函数时可以写在圆括号外面。
+         */
         uiAutomator.sendReply(reply.groupName, reply.replyText) {
             isProcessing = false
             UiController.release()
