@@ -151,6 +151,10 @@ class UIPollingCollector(
     private var currentInterval = config.pollInterval.toLong()
     // 连续空闲轮询次数，用于自适应频率
     private var consecutiveIdle = 0
+    // 最近一次尝试启动企业微信的时间，用于防止反复启动
+    private var lastLaunchTime = 0L
+    // 启动冷却期：8 秒内不重复启动，给企业微信留出启动时间
+    private val LAUNCH_COOLDOWN_MS = 8000L
 
     fun isRunning(): Boolean = isRunning
 
@@ -209,8 +213,14 @@ class UIPollingCollector(
         try {
             val root = findWeWorkRoot()
             if (root == null) {
-                MessageLog.add("[POLL] WeWork window not found，尝试启动企业微信")
-                launchWeWork()
+                val now = System.currentTimeMillis()
+                if (now - lastLaunchTime > LAUNCH_COOLDOWN_MS) {
+                    MessageLog.add("[POLL] WeWork window not found，尝试启动企业微信")
+                    launchWeWork()
+                    lastLaunchTime = now
+                } else {
+                    MessageLog.add("[POLL] WeWork window not found，启动冷却中，跳过")
+                }
                 // vivo 启动较慢，临时延长轮询间隔，等应用真正出现
                 currentInterval = 5000L
                 scheduleNext()
@@ -973,23 +983,10 @@ class UIPollingCollector(
 
     /**
      * 启动企业微信。
+     *
+     * 使用 WeWorkLauncher 的健壮启动逻辑，绕过 Android 10+ 后台启动限制。
      */
     private fun launchWeWork() {
-        try {
-            val intent = service.packageManager.getLaunchIntentForPackage(PACKAGE_WEWORK)
-            if (intent != null) {
-                intent.addFlags(
-                    Intent.FLAG_ACTIVITY_NEW_TASK
-                        or Intent.FLAG_ACTIVITY_CLEAR_TOP
-                        or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT
-                )
-                service.startActivity(intent)
-                MessageLog.add("[POLL] 已启动企业微信")
-            } else {
-                MessageLog.add("[POLL] 无法获取企业微信启动Intent")
-            }
-        } catch (e: Exception) {
-            MessageLog.add("[POLL] 启动企业微信异常: ${e.message}")
-        }
+        WeWorkLauncher.launch(service, "POLL")
     }
 }

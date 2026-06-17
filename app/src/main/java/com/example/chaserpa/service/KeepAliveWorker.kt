@@ -1,7 +1,6 @@
 package com.example.chaserpa.service
 
 import android.accessibilityservice.AccessibilityService
-import android.content.Intent
 import android.os.Handler
 import android.os.Looper
 
@@ -9,7 +8,7 @@ import android.os.Looper
  * 企业微信保活 Worker。
  *
  * 这是一个独立轮询检测器，定期检查企业微信是否在前台。
- * 如果连续多次检测不到企业微信窗口，就先按 Home 回桌面，再启动企业微信，
+ * 如果检测不到企业微信窗口，就先按 Home 回桌面，再启动企业微信，
  * 从而绕过部分 ROM 对后台直接启动 Activity 的限制。
  */
 class KeepAliveWorker(private val service: AccessibilityService) {
@@ -141,36 +140,10 @@ class KeepAliveWorker(private val service: AccessibilityService) {
 
     /**
      * 启动企业微信。
+     *
+     * 使用 WeWorkLauncher 的健壮启动逻辑，绕过 Android 10+ 后台启动限制。
      */
     private fun launchWeWork() {
-        if (!WeWorkAccessibilityService.isMonitoringEnabled()) {
-            MessageLog.add("[KEEPALIVE] 监控已停止，不启动企业微信")
-            return
-        }
-        try {
-            // 通过包管理器获取企业微信的启动 Intent
-            val intent = service.packageManager.getLaunchIntentForPackage(PACKAGE_WEWORK)
-            if (intent != null) {
-                /**
-                 * 设置 Intent 标志位：
-                 * - FLAG_ACTIVITY_NEW_TASK：在新任务栈中启动 Activity。
-                 * - FLAG_ACTIVITY_CLEAR_TOP：如果目标 Activity 已在栈顶上方有实例，清除上方实例。
-                 * - FLAG_ACTIVITY_REORDER_TO_FRONT：如果 Activity 已在任务栈中，把它移到前台。
-                 *
-                 * Kotlin 语法提示：or 是按位或，等价于 Java 的 |。
-                 */
-                intent.addFlags(
-                    Intent.FLAG_ACTIVITY_NEW_TASK
-                        or Intent.FLAG_ACTIVITY_CLEAR_TOP
-                        or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT
-                )
-                service.startActivity(intent)
-                MessageLog.add("[KEEPALIVE] 已启动企业微信")
-            } else {
-                MessageLog.add("[KEEPALIVE] 无法获取企业微信启动Intent")
-            }
-        } catch (e: Exception) {
-            MessageLog.add("[KEEPALIVE] 启动企业微信异常: ${e.message}")
-        }
+        WeWorkLauncher.launch(service, "KEEPALIVE")
     }
 }

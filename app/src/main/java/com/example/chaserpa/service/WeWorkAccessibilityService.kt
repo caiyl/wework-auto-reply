@@ -171,7 +171,6 @@ class WeWorkAccessibilityService : AccessibilityService() {
         }
 
         messageCollector = MessageCollector(
-            service = this,
             config = configRepository,
             onMessageCollected = onMessageCollected
         )
