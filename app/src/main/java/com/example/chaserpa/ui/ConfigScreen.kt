@@ -101,6 +101,7 @@ fun ConfigScreen() {
         mutableStateOf(configRepository.targetGroups.joinToString(", "))
     }
     var myNickname by remember { mutableStateOf(configRepository.myNickname) }
+    var myNicknameError by remember { mutableStateOf(false) }
     var pollInterval by remember { mutableStateOf(configRepository.pollInterval) }
     var adaptivePoll by remember { mutableStateOf(configRepository.adaptivePoll) }
     var replyBackendUrl by remember { mutableStateOf(configRepository.replyBackendUrl) }
@@ -228,9 +229,18 @@ fun ConfigScreen() {
 
             OutlinedTextField(
                 value = myNickname,
-                onValueChange = { myNickname = it },
-                label = { Text("我的昵称（防死循环，选填）") },
-                placeholder = { Text("填写后自动跳过自己发送的消息") },
+                onValueChange = {
+                    myNickname = it
+                    myNicknameError = false
+                },
+                label = { Text("我的昵称（必填，防死循环）") },
+                placeholder = { Text("填写你在企业微信中的昵称") },
+                isError = myNicknameError,
+                supportingText = {
+                    if (myNicknameError) {
+                        Text("昵称不能为空", color = MaterialTheme.colorScheme.error)
+                    }
+                },
                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
                 modifier = Modifier.fillMaxWidth()
             )
@@ -390,6 +400,14 @@ fun ConfigScreen() {
              */
             Button(
                 onClick = {
+                    // 校验必填项
+                    if (myNickname.trim().isEmpty()) {
+                        myNicknameError = true
+                        savedMessage = "请填写我的昵称"
+                        return@Button
+                    }
+                    myNicknameError = false
+
                     configRepository.backendUrl = backendUrl.trim()
                     configRepository.apiKey = apiKey.trim()
                     configRepository.targetGroups = targetGroups.split(",")
@@ -528,7 +546,7 @@ fun ConfigScreen() {
 
             // 使用说明文本
             Text(
-                text = "使用说明：\n1. 填写后台地址和 API Key（留空则只打印日志）\n2. 输入要监控的群名称（必须与微信中显示的一致）\n3. 保存配置\n4. 在系统设置中开启 chaserpa 的无障碍服务\n5. 让企业微信在后台，目标群有新消息时会自动采集",
+                text = "使用说明：\n1. 输入要监控的群名称（必须与微信中显示的一致）\n2. 填写我的昵称（必填，用于过滤自己发送的消息，防止死循环）\n3. 填写后台地址和 API Key（留空则只打印日志）\n4. 保存配置\n5. 在系统设置中开启 chaserpa 的无障碍服务\n6. 让企业微信在后台，目标群有新消息时会自动采集",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
