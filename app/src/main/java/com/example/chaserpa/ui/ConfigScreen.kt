@@ -31,10 +31,12 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.TopAppBar
 // Compose 状态管理相关
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.platform.LocalLifecycleOwner
 // Compose UI 基础：Modifier 用于修改组件的尺寸、边距、点击等
 import androidx.compose.ui.Modifier
 // Android Toast 提示
@@ -109,9 +111,29 @@ fun ConfigScreen() {
     var monitoringEnabled by remember { mutableStateOf(configRepository.monitoringEnabled) }
     var savedMessage by remember { mutableStateOf<String?>(null) }
 
-    // WeWorkAccessibilityService.isRunning 是一个伴生对象（companion object）中的属性，
-    // 类似 Java 的 public static boolean isRunning，用于判断无障碍服务是否正在运行。
-    val serviceRunning = WeWorkAccessibilityService.isRunning
+    // 实时查询用户在系统设置中是否已启用本无障碍服务。
+    // 这比 WeWorkAccessibilityService.isRunning 更可靠：
+    // isRunning 只表示服务实例是否还活着，如果系统临时回收服务可能不准；
+    // 而通过 AccessibilityManager 读取设置列表，只要用户打开过开关就会返回 true。
+    var serviceEnabled by remember {
+        mutableStateOf(WeWorkAccessibilityService.isEnabledInSettings(context))
+    }
+
+    // 监听生命周期，每次从设置页面返回（ON_RESUME）时重新查询一次状态。
+    // DisposableEffect 在 Composable 进入界面时注册观察者，离开界面时自动清理。
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
+            if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) {
+                serviceEnabled = WeWorkAccessibilityService.isEnabledInSettings(context)
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        // onDispose 在 DisposableEffect 离开时调用，移除观察者防止内存泄漏
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+        }
+    }
 
     /**
      * Scaffold 是 Material3 提供的页面骨架组件，包含顶部栏、底部栏、浮动按钮、内容区域等插槽。
@@ -151,13 +173,13 @@ fun ConfigScreen() {
              * serviceRunning ? primary : error
              */
             Text(
-                text = if (serviceRunning) "✓ 无障碍服务运行中" else "✗ 无障碍服务未启动",
+                text = if (serviceEnabled) "✓ 无障碍服务已启用" else "✗ 无障碍服务未启用",
                 style = MaterialTheme.typography.bodyLarge,
-                color = if (serviceRunning) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error
+                color = if (serviceEnabled) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error
             )
 
-            // 如果无障碍服务没启动，显示一个跳转按钮引导用户去系统设置开启
-            if (!serviceRunning) {
+            // 如果无障碍服务没启用，显示一个跳转按钮引导用户去系统设置开启
+            if (!serviceEnabled) {
                 // Spacer 是占位空白组件，类似 HTML 的 <div> 或 Android 的 Space。
                 // height(8.dp) 表示高度 8dp。
                 Spacer(modifier = Modifier.height(8.dp))
@@ -410,7 +432,7 @@ fun ConfigScreen() {
 
                     configRepository.backendUrl = backendUrl.trim()
                     configRepository.apiKey = apiKey.trim()
-                    configRepository.targetGroups = targetGroups.split(",")
+                    configRepository.targetGroups = targetGroups.split(",", "，")
                         .map { it.trim() }
                         .filter { it.isNotEmpty() }
                         .toSet()

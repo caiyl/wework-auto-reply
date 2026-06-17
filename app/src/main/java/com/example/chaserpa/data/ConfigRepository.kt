@@ -93,7 +93,7 @@ class ConfigRepository(context: Context) {
     var targetGroups: Set<String>
         get() {
             val raw = prefs.getString(KEY_TARGET_GROUPS, "") ?: ""
-            return if (raw.isEmpty()) emptySet() else raw.split(",").map { it.trim() }.filter { it.isNotEmpty() }.toSet()
+            return if (raw.isEmpty()) emptySet() else raw.split(",", "，").map { it.trim() }.filter { it.isNotEmpty() }.toSet()
         }
         set(value) = prefs.edit().putString(KEY_TARGET_GROUPS, value.joinToString(",")).apply()
 

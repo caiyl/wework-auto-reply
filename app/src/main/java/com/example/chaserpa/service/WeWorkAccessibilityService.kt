@@ -1,6 +1,8 @@
 package com.example.chaserpa.service
 
 import android.accessibilityservice.AccessibilityService
+import android.accessibilityservice.AccessibilityServiceInfo
+import android.content.Context
 import android.util.Log
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
@@ -69,6 +71,28 @@ class WeWorkAccessibilityService : AccessibilityService() {
          * 避免停止监控后仍触发轮询、保活、UI 自动化等行为。
          */
         fun isMonitoringEnabled(): Boolean = instance?.monitoringEnabled ?: false
+
+        /**
+         * 实时查询用户是否已在系统设置中启用本无障碍服务。
+         *
+         * 说明：
+         * - isRunning 只能反映服务实例是否还活着，如果服务被系统临时回收可能不准确；
+         * - 这个方法通过 AccessibilityManager 直接读取系统设置中已启用的服务列表，
+         *   只要用户打开过开关就会返回 true，更适合判断“要不要显示去开启按钮”。
+         */
+        fun isEnabledInSettings(context: Context): Boolean {
+            val accessibilityManager =
+                context.getSystemService(Context.ACCESSIBILITY_SERVICE) as? android.view.accessibility.AccessibilityManager
+                    ?: return false
+            val enabledServices = accessibilityManager.getEnabledAccessibilityServiceList(
+                AccessibilityServiceInfo.FEEDBACK_ALL_MASK
+            ) ?: return false
+            val componentName = android.content.ComponentName(context.packageName, WeWorkAccessibilityService::class.java.name)
+            return enabledServices.any { it.resolveInfo?.serviceInfo?.let { serviceInfo ->
+                componentName.packageName == serviceInfo.packageName &&
+                        componentName.className == serviceInfo.name
+            } == true }
+        }
     }
 
     /**
