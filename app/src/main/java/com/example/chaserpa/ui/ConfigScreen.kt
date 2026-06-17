@@ -100,7 +100,6 @@ fun ConfigScreen() {
         // joinToString 把集合用指定分隔符连接成字符串，类似 Java String.join(", ", set)
         mutableStateOf(configRepository.targetGroups.joinToString(", "))
     }
-    var autoReply by remember { mutableStateOf(configRepository.autoReply) }
     var myNickname by remember { mutableStateOf(configRepository.myNickname) }
     var monitorMode by remember { mutableStateOf(configRepository.monitorMode) }
     var pollInterval by remember { mutableStateOf(configRepository.pollInterval) }
@@ -411,25 +410,6 @@ fun ConfigScreen() {
                 )
             }
 
-            Spacer(modifier = Modifier.height(12.dp))
-
-            /**
-             * 自动回复开关。
-             */
-            Row(
-                verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Text(
-                    text = "自动回复（收到：xxx）",
-                    modifier = Modifier.weight(1f)
-                )
-                Switch(
-                    checked = autoReply,
-                    onCheckedChange = { autoReply = it }
-                )
-            }
-
             Spacer(modifier = Modifier.height(24.dp))
 
             /**
@@ -451,7 +431,8 @@ fun ConfigScreen() {
                         .map { it.trim() }
                         .filter { it.isNotEmpty() }
                         .toSet()
-                    configRepository.autoReply = autoReply
+                    // 自动回复默认始终开启，不再提供界面开关
+                    configRepository.autoReply = true
                     configRepository.myNickname = myNickname.trim()
                     configRepository.monitorMode = monitorMode
                     configRepository.pollInterval = pollInterval

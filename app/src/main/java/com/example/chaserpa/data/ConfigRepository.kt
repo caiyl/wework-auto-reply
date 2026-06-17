@@ -98,7 +98,7 @@ class ConfigRepository(context: Context) {
         set(value) = prefs.edit().putString(KEY_TARGET_GROUPS, value.joinToString(",")).apply()
 
     var autoReply: Boolean
-        get() = prefs.getBoolean(KEY_AUTO_REPLY, false)
+        get() = prefs.getBoolean(KEY_AUTO_REPLY, true)
         set(value) = prefs.edit().putBoolean(KEY_AUTO_REPLY, value).apply()
 
     var myNickname: String
