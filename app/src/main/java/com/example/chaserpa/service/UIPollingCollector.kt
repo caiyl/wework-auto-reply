@@ -73,7 +73,7 @@ class UIPollingCollector(
         // 注：输入区 ID 定义在 WeWorkUIAutomator.kt 中
 
         private const val MAX_SCAN_ITEMS = 10
-        private const val MSG_MAX_AGE_MS = 300_000L // 5分钟
+        private const val MSG_MAX_AGE_MS = 120_000L // 2分钟，超过此时间的消息视为旧消息，不再触发读取
         private const val MAX_CHAT_READ_MS = 20_000L // 进群读取整体超时 20 秒
 
         // 跨 UIPollingCollector 实例保留消息列表快照，避免 Worker 重启后重复触发同一消息
