@@ -3,6 +3,7 @@ package com.example.chaserpa
 import android.app.Activity
 import android.content.ComponentName
 import android.content.Intent
+import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -40,7 +41,12 @@ class LaunchBridgeActivity : Activity() {
         // 延迟 300ms 后启动目标应用，给本 Activity 完成前台显示
         Handler(Looper.getMainLooper()).postDelayed({
             launchTargetApp(targetPackage, targetActivity)
-            finish()
+            // 启动后关闭并移除本任务，避免用户按返回键回到这里
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                finishAndRemoveTask()
+            } else {
+                finish()
+            }
         }, LAUNCH_DELAY_MS)
     }
 

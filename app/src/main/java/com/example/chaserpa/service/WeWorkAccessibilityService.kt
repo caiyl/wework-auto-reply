@@ -3,6 +3,8 @@ package com.example.chaserpa.service
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.AccessibilityServiceInfo
 import android.content.Context
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
@@ -115,6 +117,18 @@ class WeWorkAccessibilityService : AccessibilityService() {
     private var replyWorker: ReplyWorker? = null
     private var keepAliveWorker: KeepAliveWorker? = null
 
+    // 主线程 Handler，用于配置页停留超时检测
+    private val foregroundHandler = Handler(Looper.getMainLooper())
+    // 监控开启时，在配置页最多停留 10 秒，之后自动拉回企业微信
+    private val CHASERPA_FOREGROUND_TIMEOUT_MS = 10000L
+    // 超时任务
+    private val foregroundTimeoutRunnable = Runnable {
+        if (isChaserpaForeground && monitoringEnabled) {
+            MessageLog.add("[SYS] 配置页停留超过${CHASERPA_FOREGROUND_TIMEOUT_MS/1000}秒，自动拉回企业微信")
+            WeWorkLauncher.launch(this@WeWorkAccessibilityService, "FOREGROUND-TIMEOUT")
+        }
+    }
+
     @Volatile
     private var monitoringEnabled = true
 
@@ -211,6 +225,8 @@ class WeWorkAccessibilityService : AccessibilityService() {
             if (isChaserpaForeground) {
                 MessageLog.add("[SYS] 当前在配置页，Worker 暂不启动")
                 Log.i(TAG, "ChaserPA in foreground, workers not started")
+                // 监控开启时，在配置页最多停留 10 秒，然后自动拉回企业微信
+                scheduleForegroundTimeout()
             } else {
                 Log.i(TAG, "Starting all workers")
                 startAllWorkers()
@@ -219,7 +235,26 @@ class WeWorkAccessibilityService : AccessibilityService() {
             MessageLog.add("[SYS] 监控已暂停")
             UiController.setEnabled(false)
             stopAllWorkers()
+            cancelForegroundTimeout()
         }
+    }
+
+    /**
+     * 配置页停留超时检测：监控开启时，最多在配置页停留 10 秒。
+     */
+    private fun scheduleForegroundTimeout() {
+        cancelForegroundTimeout()
+        if (isChaserpaForeground && monitoringEnabled) {
+            MessageLog.add("[SYS] 配置页停留超时检测已启动，${CHASERPA_FOREGROUND_TIMEOUT_MS/1000}秒后自动拉回企业微信")
+            foregroundHandler.postDelayed(foregroundTimeoutRunnable, CHASERPA_FOREGROUND_TIMEOUT_MS)
+        }
+    }
+
+    /**
+     * 取消配置页停留超时检测。
+     */
+    private fun cancelForegroundTimeout() {
+        foregroundHandler.removeCallbacks(foregroundTimeoutRunnable)
     }
 
     private fun startAllWorkers() {
@@ -279,10 +314,13 @@ class WeWorkAccessibilityService : AccessibilityService() {
                     MessageLog.add("[SYS] 离开配置页，恢复 Worker")
                     startAllWorkers()
                 }
+                cancelForegroundTimeout()
             } else if (!wasForeground && isChaserpaForeground) {
                 // 进入 ChaserPA，暂停所有 Worker
                 MessageLog.add("[SYS] 进入配置页，暂停 Worker")
                 stopAllWorkers()
+                // 监控开启时，最多停留 10 秒后自动拉回企业微信
+                scheduleForegroundTimeout()
             }
         }
 
@@ -305,6 +343,7 @@ class WeWorkAccessibilityService : AccessibilityService() {
         Log.i(TAG, "Accessibility service destroyed")
         isRunning = false
         instance = null
+        cancelForegroundTimeout()
         latestWeWorkRoot?.recycle()
         latestWeWorkRoot = null
         uiPollingCollector?.stop()

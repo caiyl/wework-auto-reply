@@ -1379,54 +1379,14 @@ class WeWorkUIAutomator(private val service: AccessibilityService) {
         return null
     }
 
+    /**
+     * 启动企业微信。
+     *
+     * 复用 WeWorkLauncher 的 LaunchBridgeActivity 方案，避免旧实现中
+     * 先把 ChaserPA 切到前台导致界面卡住的問題。
+     */
     private fun launchWeWork() {
-        if (!WeWorkAccessibilityService.isMonitoringEnabled()) {
-            MessageLog.add("[AUTO] 监控已停止，不启动企业微信")
-            return
-        }
-        try {
-            // 先让 ChaserPA 自己回到前台，绕过 Android 10+ 后台启动 Activity 限制
-            val selfIntent = service.packageManager.getLaunchIntentForPackage(service.packageName)
-            if (selfIntent != null) {
-                selfIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
-                service.startActivity(selfIntent)
-                MessageLog.add("[AUTO] 先切回 ChaserPA 前台")
-            }
-
-            handler.postDelayed({
-                var intent = service.packageManager.getLaunchIntentForPackage(PACKAGE_WEWORK)
-                if (intent == null) {
-                    MessageLog.add("[AUTO] getLaunchIntent 为空，尝试 resolveActivity")
-                    val queryIntent = Intent(Intent.ACTION_MAIN).apply {
-                        addCategory(Intent.CATEGORY_LAUNCHER)
-                        `package` = PACKAGE_WEWORK
-                    }
-                    val resolveInfo = service.packageManager.resolveActivity(queryIntent, 0)
-                    if (resolveInfo != null) {
-                        val activityName = resolveInfo.activityInfo.name
-                        intent = Intent(Intent.ACTION_MAIN).apply {
-                            addCategory(Intent.CATEGORY_LAUNCHER)
-                            component = ComponentName(PACKAGE_WEWORK, activityName)
-                        }
-                    }
-                }
-                if (intent != null) {
-                    intent.addFlags(
-                        Intent.FLAG_ACTIVITY_NEW_TASK
-                            or Intent.FLAG_ACTIVITY_CLEAR_TOP
-                            or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT
-                            or Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED
-                    )
-                    service.startActivity(intent)
-                    MessageLog.add("[AUTO] 已发送启动企业微信的 Intent")
-                } else {
-                    MessageLog.add("[AUTO] 无法启动企业微信：resolveActivity 也失败")
-                }
-            }, 800)
-        } catch (e: Exception) {
-            MessageLog.add("[AUTO] 启动异常: ${e.javaClass.simpleName} ${e.message}")
-            Log.e(TAG, "launchWeWork failed", e)
-        }
+        WeWorkLauncher.launch(service, "AUTO-REPLY")
     }
 
     private fun dumpTree(root: AccessibilityNodeInfo) {
