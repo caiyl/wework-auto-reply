@@ -32,9 +32,9 @@ class ConfigRepository(context: Context) {
      *
      * Kotlin 语法提示：
      * - enum class 等价于 Java 的 enum。
-     * - HYBRID 表示“混合模式”，POLLING_ONLY 表示“纯轮询模式”。
+     * - 当前只保留 POLLING_ONLY（纯轮询模式）。
      */
-    enum class MonitorMode { HYBRID, POLLING_ONLY }
+    enum class MonitorMode { POLLING_ONLY }
 
     /**
      * 伴生对象。
@@ -115,11 +115,12 @@ class ConfigRepository(context: Context) {
      */
     var monitorMode: MonitorMode
         get() {
-            val name = prefs.getString(KEY_MONITOR_MODE, MonitorMode.HYBRID.name)
+            // 已移除混合模式，始终返回纯轮询模式
+            val name = prefs.getString(KEY_MONITOR_MODE, MonitorMode.POLLING_ONLY.name)
             return try {
-                MonitorMode.valueOf(name ?: MonitorMode.HYBRID.name)
+                MonitorMode.valueOf(name ?: MonitorMode.POLLING_ONLY.name)
             } catch (_: IllegalArgumentException) {
-                MonitorMode.HYBRID
+                MonitorMode.POLLING_ONLY
             }
         }
         set(value) = prefs.edit().putString(KEY_MONITOR_MODE, value.name).apply()

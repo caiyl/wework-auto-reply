@@ -60,7 +60,7 @@ import com.example.chaserpa.service.WeWorkAccessibilityService
  * 1. 查看无障碍服务是否运行；
  * 2. 开启/暂停监控；
  * 3. 配置后台地址、API Key、目标群、昵称等；
- * 4. 选择监控模式、调整轮询间隔；
+ * 4. 调整轮询间隔；
  * 5. 查看实时日志并复制/清空。
  *
  * Kotlin/Compose 语法提示：
@@ -101,7 +101,6 @@ fun ConfigScreen() {
         mutableStateOf(configRepository.targetGroups.joinToString(", "))
     }
     var myNickname by remember { mutableStateOf(configRepository.myNickname) }
-    var monitorMode by remember { mutableStateOf(configRepository.monitorMode) }
     var pollInterval by remember { mutableStateOf(configRepository.pollInterval) }
     var adaptivePoll by remember { mutableStateOf(configRepository.adaptivePoll) }
     var replyBackendUrl by remember { mutableStateOf(configRepository.replyBackendUrl) }
@@ -286,44 +285,16 @@ fun ConfigScreen() {
 
             Spacer(modifier = Modifier.height(12.dp))
 
-            // 监控模式标题
+            // 当前仅支持纯轮询模式，移除了混合模式切换入口
             Text(
-                text = "监控模式",
+                text = "监控模式: 纯轮询模式",
                 style = MaterialTheme.typography.bodyLarge
             )
 
-            Spacer(modifier = Modifier.height(8.dp))
-
-            /**
-             * 监控模式选择按钮组。
-             *
-             * Arrangement.spacedBy(8.dp) 让 Row 中的子元素之间保持 8dp 间距。
-             * Button 表示当前选中的模式，OutlinedButton 表示未选中的模式。
-             */
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                if (monitorMode == ConfigRepository.MonitorMode.HYBRID) {
-                    Button(onClick = {}, modifier = Modifier.weight(1f)) { Text("混合模式") }
-                    OutlinedButton(onClick = { monitorMode = ConfigRepository.MonitorMode.POLLING_ONLY }, modifier = Modifier.weight(1f)) { Text("纯轮询模式") }
-                } else {
-                    OutlinedButton(onClick = { monitorMode = ConfigRepository.MonitorMode.HYBRID }, modifier = Modifier.weight(1f)) { Text("混合模式") }
-                    Button(onClick = {}, modifier = Modifier.weight(1f)) { Text("纯轮询模式") }
-                }
-            }
-
             Spacer(modifier = Modifier.height(4.dp))
 
-            /**
-             * when 表达式根据当前模式显示对应说明。
-             * 当所有分支都能覆盖枚举所有可能时，不需要 else。
-             */
             Text(
-                text = when (monitorMode) {
-                    ConfigRepository.MonitorMode.HYBRID -> "混合模式：无障碍事件 + 定时轮询双保险"
-                    ConfigRepository.MonitorMode.POLLING_ONLY -> "纯轮询模式：仅依靠定时轮询抓取消息"
-                },
+                text = "仅依靠定时轮询抓取消息",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -434,7 +405,6 @@ fun ConfigScreen() {
                     // 自动回复默认始终开启，不再提供界面开关
                     configRepository.autoReply = true
                     configRepository.myNickname = myNickname.trim()
-                    configRepository.monitorMode = monitorMode
                     configRepository.pollInterval = pollInterval
                     configRepository.adaptivePoll = adaptivePoll
                     configRepository.replyBackendUrl = replyBackendUrl.trim()
