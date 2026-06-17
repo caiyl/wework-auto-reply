@@ -373,15 +373,15 @@ fun ConfigScreen() {
             Slider(
                 value = replyPollInterval.toFloat(),
                 onValueChange = { replyPollInterval = it.toInt() },
-                valueRange = 1000f..30000f,
-                steps = 28,
+                valueRange = 1000f..15000f,
+                steps = 14,
                 modifier = Modifier.fillMaxWidth()
             )
 
             Spacer(modifier = Modifier.height(4.dp))
 
             Text(
-                text = "1.0 秒 - 30.0 秒",
+                text = "1.0 秒 - 15.0 秒",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )

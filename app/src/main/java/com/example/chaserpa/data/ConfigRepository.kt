@@ -141,8 +141,8 @@ class ConfigRepository(context: Context) {
         set(value) = prefs.edit().putBoolean(KEY_ADAPTIVE_POLL, value).apply()
 
     var replyPollInterval: Int
-        get() = prefs.getInt(KEY_REPLY_POLL_INTERVAL, 5000).coerceIn(1000, 30000)
-        set(value) = prefs.edit().putInt(KEY_REPLY_POLL_INTERVAL, value.coerceIn(1000, 30000)).apply()
+        get() = prefs.getInt(KEY_REPLY_POLL_INTERVAL, 5000).coerceIn(1000, 15000)
+        set(value) = prefs.edit().putInt(KEY_REPLY_POLL_INTERVAL, value.coerceIn(1000, 15000)).apply()
 
     var replyBackendUrl: String
         get() = prefs.getString(KEY_REPLY_BACKEND_URL, "") ?: ""

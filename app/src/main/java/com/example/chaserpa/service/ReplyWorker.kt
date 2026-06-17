@@ -57,8 +57,8 @@ class ReplyWorker(
     fun start() {
         if (isRunning) return
         isRunning = true
-        // coerceAtLeast(2000L) 保证最小 2 秒间隔，避免过于频繁
-        val interval = config.replyPollInterval.toLong().coerceAtLeast(2000L)
+        // coerceAtLeast(1000L) 保证最小 1 秒间隔
+        val interval = config.replyPollInterval.toLong().coerceAtLeast(1000L)
         MessageLog.add("[REPLY-WORKER] 已启动，轮询间隔=${interval}ms")
         scheduleNext(interval)
     }
@@ -82,7 +82,7 @@ class ReplyWorker(
      * - scheduleNext(delayMs: Long = ...) 是带默认参数的私有方法。
      * - handler.postDelayed({ doPoll() }, delayMs) 用 Lambda 创建 Runnable。
      */
-    private fun scheduleNext(delayMs: Long = config.replyPollInterval.toLong().coerceAtLeast(2000L)) {
+    private fun scheduleNext(delayMs: Long = config.replyPollInterval.toLong().coerceAtLeast(1000L)) {
         if (!isRunning) return
         handler.postDelayed({ doPoll() }, delayMs)
     }
