@@ -675,7 +675,12 @@ fun ConfigScreen() {
                                 "3. 填写后台地址和 API Key（留空则只打印日志）\n" +
                                 "4. 保存配置\n" +
                                 "5. 在系统设置中开启 chaserpa 的无障碍服务\n" +
-                                "6. 让企业微信在后台，目标群有新消息时会自动采集",
+                                "6. 在手机设置中为 chaserpa 开启以下权限（否则无法自动拉回企业微信）：\n" +
+                                "   • 后台弹出界面 / 后台启动\n" +
+                                "   • 显示悬浮窗\n" +
+                                "   • 允许后台高耗电（或无限制）\n" +
+                                "   • 允许自启动\n" +
+                                "7. 开启监控，企业微信会被自动保持在消息列表页",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )

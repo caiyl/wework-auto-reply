@@ -14,6 +14,14 @@ import com.example.chaserpa.LaunchBridgeActivity
  * 核心思路：启动一个透明的 LaunchBridgeActivity，让它以真实前台上下文启动企业微信。
  *
  * 这个类被 KeepAliveWorker、UIPollingCollector 共享。
+ *
+ * 重要：本功能依赖手机厂商的后台权限，如果企业微信无法被拉回前台，请检查以下权限是否开启：
+ * - vivo/OPPO/小米等国产 ROM：
+ *   1. 设置 → 应用管理 → chaserpa → 权限 → 打开「后台弹出界面/后台启动」
+ *   2. 设置 → 应用管理 → chaserpa → 权限 → 打开「显示悬浮窗」
+ *   3. 设置 → 电池/电量管理 → chaserpa → 允许「后台高耗电」或「无限制」
+ *   4. 设置 → 应用管理 → chaserpa → 打开「允许自启动」
+ * - 这些权限不会被 Android 运行时权限框架提示，必须用户手动在设置中开启。
  */
 object WeWorkLauncher {
 
