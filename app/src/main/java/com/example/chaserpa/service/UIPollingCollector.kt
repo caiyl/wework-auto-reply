@@ -448,8 +448,8 @@ class UIPollingCollector(
         root.recycle()
 
         // Step 2: wait for chat detail page with retry
-        // vivo 系统 Activity 启动慢，需要更长的等待时间和更多重试
-        var retries = 12
+        // 调试期间减少重试次数，快速失败以便观察问题
+        var retries = 3
         var skipCache = false
         val checkRunnable = object : Runnable {
             override fun run() {
@@ -467,7 +467,7 @@ class UIPollingCollector(
                     if (retries > 0) {
                         retries--
                         skipCache = true
-                        handler.postDelayed(this, 1200)
+                        handler.postDelayed(this, 500)
                         return
                     }
                     MessageLog.add("[POLL] readChatDetail: chat root not found after retries, abort")
@@ -484,7 +484,7 @@ class UIPollingCollector(
                         retries--
                         skipCache = true
                         MessageLog.add("[POLL] checkRunnable: not in chat yet, will retry")
-                        handler.postDelayed(this, 1200)
+                        handler.postDelayed(this, 500)
                         return
                     }
                     MessageLog.add("[POLL] readChatDetail: not in chat screen after retries, abort")
@@ -515,7 +515,7 @@ class UIPollingCollector(
                         service.performGlobalAction(AccessibilityService.GLOBAL_ACTION_BACK)
                     }
                     UiController.release()
-                }, 1200)
+                }, 300)
             }
         }
         // vivo 首次延迟更长，给系统 Instrumentation 完成时间
