@@ -16,11 +16,15 @@ import java.util.LinkedHashMap
  *   是主构造函数带默认参数的写法。调用时可以只传一个、两个或不传。
  *   例如 MessageDeduplicator() 会使用默认值 maxSize=100, windowMs=5分钟。
  */
-class MessageDeduplicator(private val maxSize: Int = 100, private val windowMs: Long = MS_FIVE_MINUTES) {
+class MessageDeduplicator(private val maxSize: Int = 100, private val windowMs: Long = MS_DEDUPLICATE_WINDOW) {
 
     companion object {
-        // 默认去重窗口：5 分钟，300_000L 中的下划线只是可读性分隔符
-        private const val MS_FIVE_MINUTES = 300_000L
+        // 默认去重窗口：3 分钟。
+        // 选择 3 分钟的原因：
+        // - 消息有效时间 MSG_MAX_AGE_MS 为 2 分钟，2 分钟内可能多次进群读取同一条消息；
+        // - 3 分钟比 2 分钟略长，可以覆盖多次重复读取的时间范围；
+        // - 又不会过长，避免把客户的正常追问（如 2-3 分钟后重复询问）过滤掉。
+        private const val MS_DEDUPLICATE_WINDOW = 180_000L
     }
 
     /**
