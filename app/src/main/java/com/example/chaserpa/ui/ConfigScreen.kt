@@ -215,54 +215,6 @@ fun ConfigScreen() {
 
             Spacer(modifier = Modifier.height(16.dp))
 
-            /**
-             * OutlinedTextField 是带边框的输入框，类似 Android 传统 EditText。
-             *
-             * Kotlin 语法提示：
-             * - value = backendUrl 表示输入框当前显示的内容。
-             * - onValueChange = { backendUrl = it } 是输入变化时的回调，
-             *   把新值写回状态变量，Compose 会自动刷新界面。
-             * - label = { Text(...) } 是输入框的标签（浮动提示文字）。
-             * - placeholder = { Text(...) } 是占位提示文字。
-             */
-            OutlinedTextField(
-                value = backendUrl,
-                onValueChange = { backendUrl = it },
-                label = { Text("后台接口地址") },
-                placeholder = { Text("https://your-backend.com/api/message") },
-                keyboardOptions = KeyboardOptions(
-                    keyboardType = KeyboardType.Uri, // 键盘类型：URL 输入
-                    imeAction = ImeAction.Next       // 右下角按钮显示“下一项”
-                ),
-                modifier = Modifier.fillMaxWidth()
-            )
-
-            Spacer(modifier = Modifier.height(12.dp))
-
-            OutlinedTextField(
-                value = apiKey,
-                onValueChange = { apiKey = it },
-                label = { Text("API Key") },
-                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
-                modifier = Modifier.fillMaxWidth()
-            )
-
-            Spacer(modifier = Modifier.height(12.dp))
-
-            OutlinedTextField(
-                value = replyBackendUrl,
-                onValueChange = { replyBackendUrl = it },
-                label = { Text("回复拉取地址（留空则复用上方地址）") },
-                placeholder = { Text("https://your-backend.com/api/pending-replies") },
-                keyboardOptions = KeyboardOptions(
-                    keyboardType = KeyboardType.Uri,
-                    imeAction = ImeAction.Next
-                ),
-                modifier = Modifier.fillMaxWidth()
-            )
-
-            Spacer(modifier = Modifier.height(12.dp))
-
             OutlinedTextField(
                 value = targetGroups,
                 onValueChange = { targetGroups = it },
@@ -380,6 +332,48 @@ fun ConfigScreen() {
                     onCheckedChange = { adaptivePoll = it }
                 )
             }
+
+            Spacer(modifier = Modifier.height(24.dp))
+
+            /**
+             * 后台接口地址、API Key、回复拉取地址放在最后，
+             * 用户先配置核心采集参数，再填写推送/拉取目标。
+             */
+            OutlinedTextField(
+                value = backendUrl,
+                onValueChange = { backendUrl = it },
+                label = { Text("后台接口地址") },
+                placeholder = { Text("https://your-backend.com/api/message") },
+                keyboardOptions = KeyboardOptions(
+                    keyboardType = KeyboardType.Uri,
+                    imeAction = ImeAction.Next
+                ),
+                modifier = Modifier.fillMaxWidth()
+            )
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            OutlinedTextField(
+                value = apiKey,
+                onValueChange = { apiKey = it },
+                label = { Text("API Key") },
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
+                modifier = Modifier.fillMaxWidth()
+            )
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            OutlinedTextField(
+                value = replyBackendUrl,
+                onValueChange = { replyBackendUrl = it },
+                label = { Text("回复拉取地址（留空则复用上方地址）") },
+                placeholder = { Text("https://your-backend.com/api/pending-replies") },
+                keyboardOptions = KeyboardOptions(
+                    keyboardType = KeyboardType.Uri,
+                    imeAction = ImeAction.Next
+                ),
+                modifier = Modifier.fillMaxWidth()
+            )
 
             Spacer(modifier = Modifier.height(24.dp))
 
