@@ -17,10 +17,10 @@ class KeepAliveWorker(private val service: AccessibilityService) {
     companion object {
         // 企业微信包名
         private const val PACKAGE_WEWORK = "com.tencent.wework"
-        // 检测间隔：3 分钟一次，减少对用户操作的干扰
-        private const val CHECK_INTERVAL_MS = 180000L
-        // 连续 2 次检测不到才执行恢复，减少误判
-        private const val MISSING_THRESHOLD = 2
+        // 检测间隔：1 分钟一次，更快发现企业微信不在前台的情况
+        private const val CHECK_INTERVAL_MS = 60000L
+        // 检测不到立即启动，不累积次数，更快恢复监控
+        private const val MISSING_THRESHOLD = 1
     }
 
     // Handler 用于在主线程调度延迟任务
@@ -41,7 +41,7 @@ class KeepAliveWorker(private val service: AccessibilityService) {
         if (isRunning) return
         isRunning = true
         missingCount = 0
-        MessageLog.add("[KEEPALIVE] 保活机制已启动，间隔=${CHECK_INTERVAL_MS/60000}分钟")
+        MessageLog.add("[KEEPALIVE] 保活机制已启动，间隔=${CHECK_INTERVAL_MS/1000}秒")
         scheduleCheck()
     }
 
