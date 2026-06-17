@@ -128,14 +128,9 @@ class KeepAliveWorker(private val service: AccessibilityService) {
         MessageLog.add("[KEEPALIVE] 连续${MISSING_THRESHOLD}次检测不到，执行恢复")
         missingCount = 0
 
-        // 先按 Home 回到桌面，再启动企业微信（绕过部分 ROM 的后台启动限制）
-        service.performGlobalAction(AccessibilityService.GLOBAL_ACTION_HOME)
-
-        // 500 毫秒后再启动企业微信，给按 Home 动作留出时间
-        handler.postDelayed({
-            launchWeWork()
-            scheduleCheck()
-        }, 500)
+        // 使用 WeWorkLauncher 拉起企业微信，它会通过 LaunchBridgeActivity 绕过后台启动限制
+        launchWeWork()
+        scheduleCheck()
     }
 
     /**
