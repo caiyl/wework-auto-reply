@@ -603,8 +603,7 @@ class WeWorkUIAutomator(private val service: AccessibilityService) {
         val freshRoot = findWeWorkWindow()
         if (freshRoot == null) {
             MessageLog.add("[AUTO] 点击发送前窗口丢失")
-            ensureBackToMessageList(attempt = 1)
-            finishReply()
+            ensureBackToMessageList(attempt = 1, onDone = { finishReply() })
             return
         }
         val sendBtn = findSendButton(freshRoot)
@@ -654,8 +653,7 @@ class WeWorkUIAutomator(private val service: AccessibilityService) {
             } else {
                 dumpTree(freshRoot)
                 freshRoot.recycle()
-                ensureBackToMessageList(attempt = 1)
-                finishReply()
+                ensureBackToMessageList(attempt = 1, onDone = { finishReply() })
             }
         }
     }
@@ -687,15 +685,14 @@ class WeWorkUIAutomator(private val service: AccessibilityService) {
         val root = findWeWorkWindow()
         if (root == null) {
             MessageLog.add("[AUTO] 发送验证时窗口丢失")
-            ensureBackToMessageList(attempt = 1)
+            ensureBackToMessageList(attempt = 1, onDone = { finishReply() })
             return
         }
         val inputNode = findInputField(root)
         if (inputNode == null) {
             MessageLog.add("[AUTO] 发送验证时找不到输入框，可能已不在聊天页")
             root.recycle()
-            ensureBackToMessageList(attempt = 1)
-            finishReply()
+            ensureBackToMessageList(attempt = 1, onDone = { finishReply() })
             return
         }
         val inputText = inputNode.text?.toString() ?: ""
@@ -703,7 +700,6 @@ class WeWorkUIAutomator(private val service: AccessibilityService) {
         root.recycle()
 
         if (inputText.isNotBlank() && retryCount < 1) {
-            // 输入框还有文字，说明没发出去，重试一次
             MessageLog.add("[AUTO] 发送验证失败，输入框仍有文字: ${inputText.take(30)}")
             tryClickSend(retryCount = retryCount + 1)
         } else {
@@ -712,8 +708,7 @@ class WeWorkUIAutomator(private val service: AccessibilityService) {
             } else {
                 MessageLog.add("[AUTO] 输入框仍有文字但已重试过，放弃")
             }
-            ensureBackToMessageList(attempt = 1)
-            finishReply()
+            ensureBackToMessageList(attempt = 1, onDone = { finishReply() })
         }
     }
 
@@ -792,18 +787,29 @@ class WeWorkUIAutomator(private val service: AccessibilityService) {
      * 发送消息后，确保回到消息列表页。
      * vivo 群聊页没有底部"消息"Tab，正确方式是点击左上角返回按钮。
      */
-    private fun ensureBackToMessageList(attempt: Int) {
+    private fun ensureBackToMessageList(attempt: Int, onDone: (() -> Unit)? = null) {
         if (attempt > 3) {
             MessageLog.add("[AUTO] 3次尝试后仍未回到消息列表，触发紧急恢复")
             emergencyRecover()
+            onDone?.invoke()
             return
         }
 
-        // 先尝试点击左上角返回按钮
         val root = findWeWorkWindow()
         if (root != null) {
-            val clicked = clickBackButton(root)
+            val page = detectCurrentPage(root)
             root.recycle()
+            if (page == PageType.MESSAGE_LIST) {
+                MessageLog.add("[AUTO] 已在消息列表页，无需返回")
+                onDone?.invoke()
+                return
+            }
+        }
+
+        val root2 = findWeWorkWindow()
+        if (root2 != null) {
+            val clicked = clickBackButton(root2)
+            root2.recycle()
             if (clicked) {
                 MessageLog.add("[AUTO] 已点击左上角返回按钮")
                 handler.postDelayed({
@@ -813,18 +819,22 @@ class WeWorkUIAutomator(private val service: AccessibilityService) {
                         verifyRoot.recycle()
                         if (page == PageType.MESSAGE_LIST) {
                             MessageLog.add("[AUTO] 已回到消息列表页")
+                            onDone?.invoke()
                         } else if (page == PageType.CHAT) {
-                            ensureBackToMessageList(attempt + 1)
+                            ensureBackToMessageList(attempt + 1, onDone)
                         } else {
                             navigateToMessageTabAcrossWindows()
+                            onDone?.invoke()
                         }
+                    } else {
+                        emergencyRecover()
+                        onDone?.invoke()
                     }
                 }, 1200)
                 return
             }
         }
 
-        // fallback 到按 Back
         MessageLog.add("[AUTO] 返回按钮未找到，第${attempt}次按Back")
         service.performGlobalAction(AccessibilityService.GLOBAL_ACTION_BACK)
 
@@ -833,6 +843,7 @@ class WeWorkUIAutomator(private val service: AccessibilityService) {
             if (verifyRoot == null) {
                 MessageLog.add("[AUTO] Back后窗口丢失，触发紧急恢复")
                 emergencyRecover()
+                onDone?.invoke()
                 return@postDelayed
             }
             val page = detectCurrentPage(verifyRoot)
@@ -840,13 +851,15 @@ class WeWorkUIAutomator(private val service: AccessibilityService) {
             when (page) {
                 PageType.MESSAGE_LIST -> {
                     MessageLog.add("[AUTO] 已回到消息列表页")
+                    onDone?.invoke()
                 }
                 PageType.CHAT -> {
-                    ensureBackToMessageList(attempt + 1)
+                    ensureBackToMessageList(attempt + 1, onDone)
                 }
                 else -> {
                     MessageLog.add("[AUTO] Back后进入$page，尝试点击'消息'Tab切回")
                     navigateToMessageTabAcrossWindows()
+                    onDone?.invoke()
                 }
             }
         }, 800)
