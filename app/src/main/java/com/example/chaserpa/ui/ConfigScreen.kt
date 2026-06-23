@@ -104,6 +104,7 @@ fun ConfigScreen() {
     var adaptivePoll by remember { mutableStateOf(configRepository.adaptivePoll) }
     var replyBackendUrl by remember { mutableStateOf(configRepository.replyBackendUrl) }
     var replyPollInterval by remember { mutableStateOf(configRepository.replyPollInterval) }
+    var adaptiveReplyPoll by remember { mutableStateOf(configRepository.adaptiveReplyPoll) }
     var monitoringEnabled by remember { mutableStateOf(configRepository.monitoringEnabled) }
 
     // 实时查询无障碍服务在系统设置中是否已启用
@@ -416,6 +417,37 @@ fun ConfigScreen() {
 
                     HorizontalDivider(modifier = Modifier.padding(vertical = 12.dp))
 
+                    // 回复自适应频率
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Speed,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(20.dp)
+                        )
+                        Spacer(modifier = Modifier.size(8.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "回复自适应频率",
+                                style = MaterialTheme.typography.bodyMedium
+                            )
+                            Text(
+                                text = "有回复时加速、无回复时减速，减少无效请求",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        Switch(
+                            checked = adaptiveReplyPoll,
+                            onCheckedChange = { adaptiveReplyPoll = it }
+                        )
+                    }
+
+                    HorizontalDivider(modifier = Modifier.padding(vertical = 12.dp))
+
                     // 自适应频率
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
@@ -531,6 +563,7 @@ fun ConfigScreen() {
                     configRepository.adaptivePoll = adaptivePoll
                     configRepository.replyBackendUrl = replyBackendUrl.trim()
                     configRepository.replyPollInterval = replyPollInterval
+                    configRepository.adaptiveReplyPoll = adaptiveReplyPoll
                     showSnackbar("配置已保存")
                 },
                 modifier = Modifier.fillMaxWidth()

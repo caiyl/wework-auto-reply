@@ -54,6 +54,7 @@ class ConfigRepository(context: Context) {
         private const val KEY_POLL_INTERVAL = "poll_interval"
         private const val KEY_ADAPTIVE_POLL = "adaptive_poll"
         private const val KEY_REPLY_POLL_INTERVAL = "reply_poll_interval"
+        private const val KEY_ADAPTIVE_REPLY_POLL = "adaptive_reply_poll"
         private const val KEY_REPLY_BACKEND_URL = "reply_backend_url"
         private const val KEY_MONITORING_ENABLED = "monitoring_enabled"
     }
@@ -258,6 +259,23 @@ class ConfigRepository(context: Context) {
     var replyPollInterval: Int
         get() = prefs.getInt(KEY_REPLY_POLL_INTERVAL, 5000).coerceIn(1000, 15000)
         set(value) = prefs.edit().putInt(KEY_REPLY_POLL_INTERVAL, value.coerceIn(1000, 15000)).apply()
+
+    /**
+     * 回复自适应频率开关。
+     *
+     * 用途：
+     * - 控制 ReplyWorker 是否根据后台回复活跃度动态调整拉取速度。
+     *
+     * 逻辑：
+     * - 开启后，当后台返回待回复消息时，立即把拉取间隔加速到 2 秒。
+     * - 连续 3 轮没有待回复消息，则把间隔放慢到 8 秒。
+     * - 其他时间使用 replyPollInterval 的设置值。
+     *
+     * 默认值：true（建议开启，可在回复响应速度和功耗之间取得平衡）。
+     */
+    var adaptiveReplyPoll: Boolean
+        get() = prefs.getBoolean(KEY_ADAPTIVE_REPLY_POLL, true)
+        set(value) = prefs.edit().putBoolean(KEY_ADAPTIVE_REPLY_POLL, value).apply()
 
     /**
      * 回复拉取地址。

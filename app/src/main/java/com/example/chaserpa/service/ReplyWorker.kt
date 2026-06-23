@@ -53,14 +53,17 @@ class ReplyWorker(
     private var isRunning = false
     @Volatile
     private var isProcessing = false
+    private var currentInterval = DEFAULT_INTERVAL_MS
+    private var consecutiveIdle = 0
+    private var hadRepliesThisRound = false
 
     fun start() {
         if (isRunning) return
         isRunning = true
-        // coerceAtLeast(1000L) 保证最小 1 秒间隔
-        val interval = config.replyPollInterval.toLong().coerceAtLeast(1000L)
-        MessageLog.add("[REPLY-WORKER] 已启动，轮询间隔=${interval}ms")
-        scheduleNext(interval)
+        currentInterval = config.replyPollInterval.toLong().coerceAtLeast(1000L)
+        consecutiveIdle = 0
+        MessageLog.add("[REPLY-WORKER] 已启动，轮询间隔=${currentInterval}ms")
+        scheduleNext()
     }
 
     fun stop() {
@@ -78,13 +81,30 @@ class ReplyWorker(
     /**
      * 安排下一次轮询。
      *
-     * Kotlin 语法提示：
-     * - scheduleNext(delayMs: Long = ...) 是带默认参数的私有方法。
-     * - handler.postDelayed({ doPoll() }, delayMs) 用 Lambda 创建 Runnable。
+     * @param delayMs 指定延迟，非 null 时跳过自适应逻辑直接使用该值。
      */
-    private fun scheduleNext(delayMs: Long = config.replyPollInterval.toLong().coerceAtLeast(1000L)) {
+    private fun scheduleNext(delayMs: Long? = null) {
         if (!isRunning) return
-        handler.postDelayed({ doPoll() }, delayMs)
+        val actualDelay = delayMs ?: run {
+            if (config.adaptiveReplyPoll) {
+                if (hadRepliesThisRound) {
+                    currentInterval = 2000L
+                    consecutiveIdle = 0
+                } else {
+                    consecutiveIdle++
+                    if (consecutiveIdle >= 3) {
+                        currentInterval = 8000L
+                    } else {
+                        currentInterval = config.replyPollInterval.toLong().coerceAtLeast(1000L)
+                    }
+                }
+                hadRepliesThisRound = false
+                currentInterval
+            } else {
+                config.replyPollInterval.toLong().coerceAtLeast(1000L)
+            }
+        }
+        handler.postDelayed({ doPoll() }, actualDelay)
     }
 
     /**
@@ -114,6 +134,7 @@ class ReplyWorker(
         // 1. 先尝试消费本地队列中已有的消息
         val queuedReply = ReplyQueue.dequeue()
         if (queuedReply != null) {
+            hadRepliesThisRound = true
             executeReply(queuedReply)
             return
         }
@@ -147,6 +168,7 @@ class ReplyWorker(
             }
 
             override fun onResponse(call: Call, response: Response) {
+                var foundReplies = false
                 try {
                     if (response.isSuccessful) {
                         val body = response.body?.string()
@@ -155,6 +177,7 @@ class ReplyWorker(
                             val replies = parseReplies(body)
                             if (replies.isNotEmpty()) {
                                 ReplyQueue.enqueueBatch(replies)
+                                foundReplies = true
                                 MessageLog.add("[REPLY-WORKER] 从后台拉取 ${replies.size} 条待回复")
                             } else {
                                 MessageLog.add("[REPLY-WORKER] 后台无待回复消息 (replies=0)")
@@ -170,7 +193,10 @@ class ReplyWorker(
                     MessageLog.add("[REPLY-WORKER] 解析响应失败: ${e.message}")
                 } finally {
                     response.close()
-                    handler.post { scheduleNext() }
+                    handler.post {
+                        if (foundReplies) hadRepliesThisRound = true
+                        scheduleNext()
+                    }
                 }
             }
         })
