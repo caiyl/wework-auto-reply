@@ -296,6 +296,7 @@ class UIPollingCollector(
         val nodesToRecycle = mutableListOf<AccessibilityNodeInfo>()
         var hasNewMessage = false
         val currentSnapshot = mutableMapOf<String, Pair<String, String>>()
+        val failedGroups = mutableSetOf<String>()
         try {
             for (i in 0 until minOf(recyclerView.childCount, MAX_SCAN_ITEMS)) {
                 val item = recyclerView.getChild(i) ?: continue
@@ -333,13 +334,16 @@ class UIPollingCollector(
                         }
                         MessageLog.add("[POLL] New message detected in '$groupName': $summary")
                         hasNewMessage = true
-                        readChatDetail(groupName)
+                        val acquired = readChatDetail(groupName)
+                        if (!acquired) {
+                            failedGroups.add(groupName)
+                        }
                     }
                 }
             }
             synchronized(listSnapshot) {
                 listSnapshot.clear()
-                listSnapshot.putAll(currentSnapshot)
+                listSnapshot.putAll(currentSnapshot.filterKeys { it !in failedGroups })
             }
         } catch (e: Exception) {
             MessageLog.add("[POLL] scanMessageList exception: ${e.javaClass.simpleName}: ${e.message}")
@@ -354,14 +358,14 @@ class UIPollingCollector(
     /**
      * 进入指定群聊详情页并提取最新消息。
      */
-    private fun readChatDetail(groupName: String) {
+    private fun readChatDetail(groupName: String): Boolean {
         if (!WeWorkAccessibilityService.isMonitoringEnabled()) {
             MessageLog.add("[POLL] 监控已停止，不读取群详情")
-            return
+            return false
         }
         if (!UiController.acquire()) {
             MessageLog.add("[POLL] readChatDetail skipped: UI is busy")
-            return
+            return false
         }
         val readStartTime = System.currentTimeMillis()
         MessageLog.add("[POLL] readChatDetail start for '$groupName'")
@@ -370,10 +374,9 @@ class UIPollingCollector(
         if (root == null) {
             MessageLog.add("[POLL] readChatDetail: WeWork root not found")
             UiController.release()
-            return
+            return true
         }
 
-        // 安全页面检查：如果当前不在消息列表页（无RecyclerView），尝试切回
         val recyclerViewNodes = root.findAccessibilityNodeInfosByViewId(ID_RECYCLER_VIEW)
         if (recyclerViewNodes.isEmpty()) {
             MessageLog.add("[POLL] readChatDetail: 当前不在消息列表页，尝试切回")
@@ -381,7 +384,7 @@ class UIPollingCollector(
             navigateToMessageTab(root)
             root.recycle()
             UiController.release()
-            return
+            return true
         }
         val recyclerView = recyclerViewNodes.firstOrNull()
         if (recyclerView == null) {
@@ -389,7 +392,7 @@ class UIPollingCollector(
             recyclerViewNodes.forEach { it.recycle() }
             root.recycle()
             UiController.release()
-            return
+            return true
         }
 
         var groupItemNode: AccessibilityNodeInfo? = null
@@ -432,7 +435,7 @@ class UIPollingCollector(
             MessageLog.add("[POLL] readChatDetail: clickable group item not found for '$groupName'")
             root.recycle()
             UiController.release()
-            return
+            return true
         }
 
         val clickSuccess = groupItemNode.performAction(AccessibilityNodeInfo.ACTION_CLICK)
@@ -442,7 +445,7 @@ class UIPollingCollector(
             groupItemNode.recycle()
             root.recycle()
             UiController.release()
-            return
+            return true
         }
         groupItemNode.recycle()
         root.recycle()
@@ -520,6 +523,7 @@ class UIPollingCollector(
         }
         // vivo 首次延迟更长，给系统 Instrumentation 完成时间
         handler.postDelayed(checkRunnable, 1500)
+        return true
     }
 
     /**

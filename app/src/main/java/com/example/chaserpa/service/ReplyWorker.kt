@@ -226,16 +226,13 @@ class ReplyWorker(
 
         MessageLog.add("[REPLY-WORKER] 开始回复: ${reply.groupName} -> ${reply.replyText.take(30)}")
         isProcessing = true
-        // 获取 UI 操作锁
-        UiController.acquire()
+        if (!UiController.acquire()) {
+            MessageLog.add("[REPLY-WORKER] UI被占用，稍后重试")
+            isProcessing = false
+            scheduleNext(2000)
+            return
+        }
 
-        /**
-         * 调用 UI 自动化器发送回复，传入完成回调。
-         *
-         * Kotlin 语法提示：
-         * - uiAutomator.sendReply(...) { ... } 是尾随 Lambda，
-         *   最后一个参数是函数时可以写在圆括号外面。
-         */
         uiAutomator.sendReply(reply.groupName, reply.replyText) {
             isProcessing = false
             UiController.release()
