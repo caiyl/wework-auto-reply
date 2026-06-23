@@ -625,17 +625,23 @@ class UIPollingCollector(
     }
 
     /**
-     * 从群聊详情页提取最新消息。
+     * 从群聊详情页提取消息。
+     *
+     * 时间上下文传递：气泡有时间则更新 lastKnownTime，无时间则继承上一个。
+     * 无时间气泡 = 时间气泡已滚出屏幕 = 旧消息，直接丢弃。
+     * 全部气泡都没有时间时，只取最后一条作为兜底。
      */
     private fun extractChatMessages(
         root: AccessibilityNodeInfo,
         groupName: String
     ): List<MessagePusher.WeWorkMessage> {
-        // Pair<消息, 该消息自己的时间气泡字符串>
-        val extracted = mutableListOf<Pair<MessagePusher.WeWorkMessage, String>>()
+        val result = mutableListOf<MessagePusher.WeWorkMessage>()
         val nodesToRecycle = mutableListOf<AccessibilityNodeInfo>()
+        var lastKnownTime: Long? = null
+        var hasAnyTime = false
+        var lastPendingMsg: MessagePusher.WeWorkMessage? = null
+        var lastValidMsg: MessagePusher.WeWorkMessage? = null
 
-        // 策略1: 尝试按消息气泡结构精确解析（ListView id=iju + 子项 RelativeLayout）
         val chatListNodes = root.findAccessibilityNodeInfosByViewId(ID_CHAT_LISTVIEW)
         val chatList = chatListNodes.firstOrNull()
         if (chatList != null) {
@@ -644,17 +650,21 @@ class UIPollingCollector(
                 val bubble = chatList.getChild(i) ?: continue
                 nodesToRecycle.add(bubble)
 
-                // 1) 用 viewId 递归查找消息内容（i9j 嵌套在第6层）
                 val contentNodes = bubble.findAccessibilityNodeInfosByViewId(ID_CHAT_CONTENT)
                 val content = contentNodes.firstOrNull()?.text?.toString()
                 nodesToRecycle.addAll(contentNodes)
 
-                // 2) 用 viewId 查找时间戳（记录每条消息自己的时间气泡）
                 val timeNodes = bubble.findAccessibilityNodeInfosByViewId(ID_CHAT_TIME)
                 val bubbleTime = timeNodes.firstOrNull()?.text?.toString() ?: ""
                 nodesToRecycle.addAll(timeNodes)
+                if (bubbleTime.isNotEmpty()) {
+                    parseUiTime(bubbleTime)?.let {
+                        lastKnownTime = it
+                        hasAnyTime = true
+                        lastPendingMsg = null
+                    }
+                }
 
-                // 3) 在气泡内部 BFS 查找无 id 的 TextView（昵称 / @微信）
                 val nicknameParts = mutableListOf<String>()
                 val bfsDeque = java.util.ArrayDeque<AccessibilityNodeInfo>()
                 bfsDeque.add(bubble)
@@ -678,13 +688,11 @@ class UIPollingCollector(
                 }
 
                 if (content != null && content.isNotBlank()) {
-                    // 无昵称 = 自己发的消息，跳过
                     if (nicknameParts.isEmpty()) {
                         MessageLog.add("[POLL] 过滤自己消息(无昵称): ${content.take(30)}")
                         continue
                     }
 
-                    // 检查是否是外部微信客户（包含 @微信）
                     val isExternalWeChat = nicknameParts.any { it.contains("微信") }
                     if (!isExternalWeChat) {
                         val actualSender = nicknameParts.firstOrNull() ?: "未知"
@@ -692,21 +700,28 @@ class UIPollingCollector(
                         continue
                     }
 
-                    // 拼接完整发送者名称，如 "chase@微信"
                     val actualSender = nicknameParts.joinToString("")
 
-                    extracted.add(
-                        MessagePusher.WeWorkMessage(
-                            groupName = groupName,
-                            sender = actualSender,
-                            content = content,
-                            timestamp = System.currentTimeMillis()
-                        ) to bubbleTime
+                    val msg = MessagePusher.WeWorkMessage(
+                        groupName = groupName,
+                        sender = actualSender,
+                        content = content,
+                        timestamp = System.currentTimeMillis()
                     )
+                    lastValidMsg = msg
+
+                    if (!hasAnyTime) {
+                        lastPendingMsg = msg
+                    } else {
+                        if (isMessageTooOld(lastKnownTime)) {
+                            MessageLog.add("[POLL] 消息过旧，跳过: ${content.take(30)}")
+                            continue
+                        }
+                        result.add(msg)
+                    }
                 }
             }
         } else {
-            // 策略2: fallback 到旧的 BFS 方式（兼容不同版本企业微信）
             val deque = java.util.ArrayDeque<AccessibilityNodeInfo>()
             deque.add(root)
             val inputHints = setOf("发消息", "添加消息内容", "输入消息", "请输入消息")
@@ -721,18 +736,17 @@ class UIPollingCollector(
                         text !in inputHints &&
                         isNodeInRecyclerView(node)
                     ) {
-                        // Fallback 策略：只保留包含 @微信 的外部客户消息
                         if (!text.contains("微信")) {
                             MessageLog.add("[POLL] 过滤非外部客户(FB): ${text.take(30)}")
                             continue
                         }
-                        extracted.add(
+                        result.add(
                             MessagePusher.WeWorkMessage(
                                 groupName = groupName,
                                 sender = "UI采集",
                                 content = text,
                                 timestamp = System.currentTimeMillis()
-                            ) to ""
+                            )
                         )
                     }
                 }
@@ -750,21 +764,18 @@ class UIPollingCollector(
         chatList?.recycle()
         chatListNodes.forEach { if (it !== chatList) it.recycle() }
 
-        // 只取最后一条（最新消息），并做时间判断
-        val last = extracted.lastOrNull()
-        if (last != null) {
-            val (message, bubbleTime) = last
-            if (bubbleTime.isNotEmpty()) {
-                val t = parseUiTime(bubbleTime)
-                if (t == null || System.currentTimeMillis() - t > MSG_MAX_AGE_MS) {
-                    MessageLog.add("[POLL] 最新消息有时间但超${MSG_MAX_AGE_MS/60000}分钟，过滤: ${message.content.take(30)}")
-                    return emptyList()
-                }
-            }
-            MessageLog.add("[POLL] 提取到最新消息: ${message.sender} -> ${message.content.take(40)}")
-            return listOf(message)
+        if (!hasAnyTime && lastPendingMsg != null) {
+            MessageLog.add("[POLL] 全部无时间气泡，只取最后一条: ${lastPendingMsg.sender} -> ${lastPendingMsg.content.take(40)}")
+            result.add(lastPendingMsg)
         }
-        return emptyList()
+        if (hasAnyTime && result.isEmpty() && lastValidMsg != null) {
+            MessageLog.add("[POLL] 时间超时兜底，由于群摘要变化推送最后一条: ${lastValidMsg.sender} -> ${lastValidMsg.content.take(40)}")
+            result.add(lastValidMsg)
+        }
+        if (result.isNotEmpty()) {
+            MessageLog.add("[POLL] 提取到 ${result.size} 条消息: ${result.joinToString { "${it.sender}->${it.content.take(20)}" }}")
+        }
+        return result
     }
 
     /**
