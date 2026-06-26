@@ -119,8 +119,8 @@ class WeWorkAccessibilityService : AccessibilityService() {
 
     // 主线程 Handler，用于配置页停留超时检测
     private val foregroundHandler = Handler(Looper.getMainLooper())
-    // 监控开启时，在配置页最多停留 10 秒，之后自动拉回企业微信
-    private val CHASERPA_FOREGROUND_TIMEOUT_MS = 10000L
+    // 监控开启时，在配置页最多停留 5 秒，之后自动拉回企业微信
+    private val CHASERPA_FOREGROUND_TIMEOUT_MS = 5000L
     // 超时任务
     private val foregroundTimeoutRunnable = Runnable {
         if (isChaserpaForeground && monitoringEnabled) {
