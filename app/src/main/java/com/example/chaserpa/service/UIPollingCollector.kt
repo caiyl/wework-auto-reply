@@ -2,6 +2,7 @@ package com.example.chaserpa.service
 
 import android.accessibilityservice.AccessibilityService
 import android.content.Intent
+import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.view.accessibility.AccessibilityNodeInfo
@@ -317,16 +318,29 @@ class UIPollingCollector(
                 groupTimeMap[groupName] = time
                 if (!config.targetGroups.contains(groupName)) continue
 
-                // 过滤草稿和自己的自动回复摘要，避免循环触发
-                if (summary.startsWith("[草稿]") || summary.contains("后台已收到")) {
-                    MessageLog.add("[POLL] 跳过残留/草稿摘要: '$groupName': $summary")
-                    continue
-                }
 
                 synchronized(listSnapshot) {
                     val last = listSnapshot[groupName]
-                    if (last == null || last.first != summary || last.second != time) {
-                        // 判断群列表项时间是否超过10分钟
+                    val isDraft = summary.startsWith("[草稿]") || summary.contains("后台已收到")
+                    val changed = last == null || last.first != summary || last.second != time
+
+                    if (isDraft) {
+                        // 草稿摘要会掩盖群里的新消息，目标群需要主动进群检查
+                        if (changed) {
+                            MessageLog.add("[POLL] 目标群出现草稿摘要，主动进群检查: '$groupName': $summary")
+                            hasNewMessage = true
+                            val acquired = readChatDetail(groupName, clearDraft = true)
+                            if (!acquired) {
+                                failedGroups.add(groupName)
+                            }
+                        } else {
+                            MessageLog.add("[POLL] 草稿摘要未变化，跳过: '$groupName': $summary")
+                        }
+                        continue
+                    }
+
+                    if (changed) {
+                        // 判断群列表项时间是否超过2分钟
                         val listTime = parseUiTime(time)
                         if (isMessageTooOld(listTime)) {
                             MessageLog.add("[POLL] 群列表时间超过${MSG_MAX_AGE_MS/60000}分钟，不触发: '$groupName' time=$time")
@@ -358,7 +372,7 @@ class UIPollingCollector(
     /**
      * 进入指定群聊详情页并提取最新消息。
      */
-    private fun readChatDetail(groupName: String): Boolean {
+    private fun readChatDetail(groupName: String, clearDraft: Boolean = false): Boolean {
         if (!WeWorkAccessibilityService.isMonitoringEnabled()) {
             MessageLog.add("[POLL] 监控已停止，不读取群详情")
             return false
@@ -501,6 +515,12 @@ class UIPollingCollector(
                 messages.forEach { msg ->
                     onMessage(msg)
                 }
+
+                // Step 4.5: clear reply draft to prevent message list summary stuck
+                if (clearDraft) {
+                    clearInputDraftIfNeeded(chatRoot)
+                }
+
                 chatRoot.recycle()
 
                 // Step 5: return to message列表
@@ -622,6 +642,49 @@ class UIPollingCollector(
         }
         nodesToRecycle.forEach { it.recycle() }
         return null
+    }
+
+    /**
+     * 清理群聊页输入框中残留的回复草稿。
+     * 回复失败后未发送的文字会让企业微信消息列表摘要一直显示"[草稿]..."，
+     * 导致后续新消息无法被检测到，因此需要在返回列表页前清理。
+     */
+    private fun clearInputDraftIfNeeded(root: AccessibilityNodeInfo) {
+        val inputNode = findInputField(root) ?: run {
+            MessageLog.add("[POLL] clearInputDraft: input not found, skip")
+            return
+        }
+        val currentText = inputNode.text?.toString() ?: ""
+        val hint = inputNode.hintText?.toString() ?: ""
+        if (currentText.isEmpty() || currentText == hint) {
+            MessageLog.add("[POLL] clearInputDraft: no draft text, skip")
+            inputNode.recycle()
+            return
+        }
+
+        MessageLog.add("[POLL] clearInputDraft: found draft text='$currentText', trying to clear")
+        val args = Bundle().apply {
+            putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, "")
+        }
+        val setTextResult = inputNode.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)
+        MessageLog.add("[POLL] clearInputDraft: ACTION_SET_TEXT result=$setTextResult")
+        if (!setTextResult) {
+            val clickResult = inputNode.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+            MessageLog.add("[POLL] clearInputDraft: ACTION_CLICK result=$clickResult")
+            if (clickResult) {
+                val selectArgs = Bundle().apply {
+                    putInt(AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_START_INT, 0)
+                    putInt(AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_END_INT, currentText.length)
+                }
+                val selectResult = inputNode.performAction(AccessibilityNodeInfo.ACTION_SET_SELECTION, selectArgs)
+                MessageLog.add("[POLL] clearInputDraft: ACTION_SET_SELECTION result=$selectResult")
+                if (selectResult) {
+                    val cutResult = inputNode.performAction(AccessibilityNodeInfo.ACTION_CUT)
+                    MessageLog.add("[POLL] clearInputDraft: ACTION_CUT result=$cutResult")
+                }
+            }
+        }
+        inputNode.recycle()
     }
 
     /**
