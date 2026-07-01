@@ -16,6 +16,14 @@ import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.TimeUnit
 
 /**
+ * 统一消息追踪 key：群名-发送者-内容前 20 字。
+ * 只用于日志，不参与任何业务逻辑。
+ */
+fun messageTraceKey(message: MessagePusher.WeWorkMessage): String {
+    return "${message.groupName}-${message.sender}-${message.content.take(20)}"
+}
+
+/**
  * 消息推送器。
  *
  * 负责把采集到的企业微信消息推送到用户后台服务器。
@@ -87,9 +95,11 @@ class MessagePusher(
         if (backendUrl.isEmpty()) {
             Log.i(TAG, "[PRINT MODE] $logLine")
             MessageLog.add("[PRINT] $logLine")
+            MessageLog.add("[MSG] trace=${messageTraceKey(message)} status=打印模式 reason=后台地址为空")
             return
         }
         MessageLog.add("[PUSH] $logLine")
+        MessageLog.add("[MSG] trace=${messageTraceKey(message)} status=推送中 reason=开始HTTP推送")
         // 先尝试推送之前失败缓存的消息
         flushPending()
         doPush(message)
@@ -142,9 +152,11 @@ class MessagePusher(
          */
         client.newCall(request).enqueue(object : Callback {
             override fun onFailure(call: Call, e: IOException) {
-                Log.e(TAG, "Push failed: ${e.message}, retry=$retryCount")
-                MessageLog.add("[PUSH_FAIL] ${message.groupName}, retry=$retryCount")
+                Log.e(TAG, "Push failed: ${e.message}, 重试次数=$retryCount")
+                MessageLog.add("[PUSH_FAIL] ${message.groupName}, 重试次数=$retryCount")
+                MessageLog.add("[MSG] trace=${messageTraceKey(message)} status=推送失败 reason=网络错误_${e.message ?: "unknown"} 重试次数=$retryCount")
                 if (retryCount < 2) {
+                    MessageLog.add("[MSG] trace=${messageTraceKey(message)} status=推送重试 reason=第${retryCount + 1}次重试")
                     // 指数退避重试：第 1 次 3 秒，第 2 次 6 秒
                     handler.postDelayed({ doPush(message, retryCount + 1) }, 3000L * (retryCount + 1))
                 } else {
@@ -157,6 +169,7 @@ class MessagePusher(
                 try {
                     if (response.isSuccessful) {
                         val body = response.body?.string()
+                        MessageLog.add("[MSG] trace=${messageTraceKey(message)} status=推送成功 reason=HTTP状态码_${response.code}")
                         if (body != null && onReply != null) {
                             try {
                                 val json = org.json.JSONObject(body)
@@ -172,6 +185,7 @@ class MessagePusher(
                         Log.i(TAG, "Message pushed successfully: ${message.groupName} / ${message.sender}")
                     } else {
                         Log.e(TAG, "Push failed with code: ${response.code}")
+                        MessageLog.add("[MSG] trace=${messageTraceKey(message)} status=推送失败 reason=HTTP状态码_${response.code}")
                         enqueuePending(message)
                     }
                 } finally {
@@ -191,6 +205,7 @@ class MessagePusher(
         }
         pendingQueue.offer(message)
         MessageLog.add("[PUSH_QUEUE] Message queued for retry (${pendingQueue.size})")
+        MessageLog.add("[MSG] trace=${messageTraceKey(message)} status=推送入队 reason=超过最大重试次数")
     }
 
     /**

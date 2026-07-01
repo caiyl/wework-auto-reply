@@ -61,6 +61,7 @@ class NotificationEventCollector(
          * - if (parcelableData !is Notification) 表示“如果不是 Notification 类型就返回”。
          */
         if (parcelableData !is Notification) {
+            MessageLog.add("[MSG] trace=unknown status=过滤_非通知 reason=数据不是通知")
             return
         }
 
@@ -73,11 +74,13 @@ class NotificationEventCollector(
 
         // 标题或正文缺失则跳过
         if (title == null || text == null) {
+            MessageLog.add("[MSG] trace=${title ?: "unknown"}-unknown status=过滤_信息缺失 reason=标题或内容为空")
             return
         }
 
         // 如果用户配置了目标群，只采集这些群的消息
         if (targetGroups.isNotEmpty() && !targetGroups.contains(title)) {
+            MessageLog.add("[MSG] trace=${title}-unknown status=过滤_非目标群 reason=群不在目标列表 content=${text.toString().take(20)}")
             return
         }
 
@@ -94,6 +97,7 @@ class NotificationEventCollector(
         val content = if (parts.size >= 2) parts[1] else senderAndContent
 
         MessageLog.add("[NOTIFY] group=$title, sender=$sender, content=$content")
+        MessageLog.add("[MSG] trace=${title}-${sender}-${content.take(20)} status=已采集 reason=通知采集")
         onMessageCollected(
             MessagePusher.WeWorkMessage(
                 groupName = title,

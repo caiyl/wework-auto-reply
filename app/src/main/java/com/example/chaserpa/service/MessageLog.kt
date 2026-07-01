@@ -109,7 +109,7 @@ object MessageLog {
      * - || 是逻辑或。
      */
     fun getAutoLogs(): List<String> {
-        return _logs.filter { it.contains("[AUTO]") || it.contains("[CAPTURE]") || it.contains("[PUSH]") }
+        return _logs.filter { it.contains("[AUTO]") || it.contains("[CAPTURE]") || it.contains("[PUSH]") || it.contains("[MSG]") }
     }
 
     /**

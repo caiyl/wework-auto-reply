@@ -172,14 +172,17 @@ class WeWorkAccessibilityService : AccessibilityService() {
             // 过滤自己发送的消息，防止死循环
             if (myNickname.isNotEmpty() && message.sender == myNickname) {
                 MessageLog.add("[SYS] 过滤自己发送的消息: ${message.content}")
+                MessageLog.add("[MSG] trace=${messageTraceKey(message)} status=过滤_自己发送 reason=发送者等于我的昵称")
             } else {
                 val timestamp = System.currentTimeMillis()
                 if (!deduplicator.isDuplicate(message.groupName, message.sender, message.content, timestamp)) {
                     MessageLog.add("[CAPTURE] group=${message.groupName}, sender=${message.sender}, content=${message.content}")
+                    MessageLog.add("[MSG] trace=${messageTraceKey(message)} status=已采集 reason=通过所有过滤")
                     messagePusher.push(message)
                 } else {
                     Log.d(TAG, "Duplicate message ignored: ${message.content}")
                     MessageLog.add("[SYS] 重复消息已忽略")
+                    MessageLog.add("[MSG] trace=${messageTraceKey(message)} status=过滤_重复 reason=3分钟内重复")
                 }
             }
         }

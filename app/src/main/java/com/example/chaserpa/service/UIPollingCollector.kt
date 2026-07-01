@@ -316,7 +316,10 @@ class UIPollingCollector(
                 val summary = summaryNode?.text?.toString() ?: ""
                 currentSnapshot[groupName] = Pair(summary, time)
                 groupTimeMap[groupName] = time
-                if (!config.targetGroups.contains(groupName)) continue
+                if (!config.targetGroups.contains(groupName)) {
+                    MessageLog.add("[MSG] trace=${groupName}-unknown-${summary.take(20)} status=过滤_非目标群 reason=群不在目标列表")
+                    continue
+                }
 
 
                 synchronized(listSnapshot) {
@@ -328,13 +331,16 @@ class UIPollingCollector(
                         // 草稿摘要会掩盖群里的新消息，目标群需要主动进群检查
                         if (changed) {
                             MessageLog.add("[POLL] 目标群出现草稿摘要，主动进群检查: '$groupName': $summary")
+                            MessageLog.add("[MSG] trace=${groupName}-unknown-${summary.take(20)} status=草稿_进入检查 reason=草稿摘要变化")
                             hasNewMessage = true
                             val acquired = readChatDetail(groupName, clearDraft = true)
                             if (!acquired) {
                                 failedGroups.add(groupName)
+                                MessageLog.add("[MSG] trace=${groupName}-unknown-${summary.take(20)} status=读取失败 reason=草稿群详情读取失败")
                             }
                         } else {
                             MessageLog.add("[POLL] 草稿摘要未变化，跳过: '$groupName': $summary")
+                            MessageLog.add("[MSG] trace=${groupName}-unknown-${summary.take(20)} status=过滤_草稿未变化 reason=草稿摘要未变化")
                         }
                         continue
                     }
@@ -344,13 +350,16 @@ class UIPollingCollector(
                         val listTime = parseUiTime(time)
                         if (isMessageTooOld(listTime)) {
                             MessageLog.add("[POLL] 群列表时间超过${MSG_MAX_AGE_MS/60000}分钟，不触发: '$groupName' time=$time")
+                            MessageLog.add("[MSG] trace=${groupName}-unknown-${summary.take(20)} status=过滤_时间过期 reason=列表时间超过${MSG_MAX_AGE_MS/60000}分钟 time=$time")
                             continue
                         }
                         MessageLog.add("[POLL] New message detected in '$groupName': $summary")
+                        MessageLog.add("[MSG] trace=${groupName}-unknown-${summary.take(20)} status=列表变化 reason=列表摘要变化")
                         hasNewMessage = true
                         val acquired = readChatDetail(groupName)
                         if (!acquired) {
                             failedGroups.add(groupName)
+                            MessageLog.add("[MSG] trace=${groupName}-unknown-${summary.take(20)} status=读取失败 reason=群详情读取失败")
                         }
                     }
                 }
@@ -722,6 +731,10 @@ class UIPollingCollector(
                 nodesToRecycle.addAll(timeNodes)
                 if (bubbleTime.isNotEmpty()) {
                     parseUiTime(bubbleTime)?.let {
+                        lastPendingMsg?.let { old ->
+                            MessageLog.add("[POLL] 发现时间气泡，丢弃无时间气泡缓存: ${old.sender} -> ${old.content.take(40)}")
+                            MessageLog.add("[MSG] trace=${messageTraceKey(old)} status=丢弃 reason=发现时间气泡丢弃暂存")
+                        }
                         lastKnownTime = it
                         hasAnyTime = true
                         lastPendingMsg = null
@@ -753,6 +766,7 @@ class UIPollingCollector(
                 if (content != null && content.isNotBlank()) {
                     if (nicknameParts.isEmpty()) {
                         MessageLog.add("[POLL] 过滤自己消息(无昵称): ${content.take(30)}")
+                        MessageLog.add("[MSG] trace=${groupName}-unknown-${content.take(20)} status=过滤_自己发送 reason=气泡无昵称")
                         continue
                     }
 
@@ -760,6 +774,7 @@ class UIPollingCollector(
                     if (!isExternalWeChat) {
                         val actualSender = nicknameParts.firstOrNull() ?: "未知"
                         MessageLog.add("[POLL] 过滤非外部客户: sender=$actualSender content=${content.take(30)}")
+                        MessageLog.add("[MSG] trace=${groupName}-${actualSender}-${content.take(20)} status=过滤_非外部客户 reason=昵称不含微信")
                         continue
                     }
 
@@ -774,10 +789,17 @@ class UIPollingCollector(
                     lastValidMsg = msg
 
                     if (!hasAnyTime) {
+                        lastPendingMsg?.let { old ->
+                            MessageLog.add("[POLL] 无时间气泡消息被覆盖: ${old.sender} -> ${old.content.take(40)}")
+                            MessageLog.add("[MSG] trace=${messageTraceKey(old)} status=丢弃 reason=被新无时间气泡消息覆盖")
+                        }
+                        MessageLog.add("[POLL] 无时间气泡，暂存消息: ${msg.sender} -> ${msg.content.take(40)}")
+                        MessageLog.add("[MSG] trace=${messageTraceKey(msg)} status=暂存_无时间气泡 reason=等待时间气泡")
                         lastPendingMsg = msg
                     } else {
                         if (isMessageTooOld(lastKnownTime)) {
                             MessageLog.add("[POLL] 消息过旧，跳过: ${content.take(30)}")
+                            MessageLog.add("[MSG] trace=${messageTraceKey(msg)} status=过滤_时间过期 reason=气泡时间超过${MSG_MAX_AGE_MS/60000}分钟")
                             continue
                         }
                         result.add(msg)
@@ -795,15 +817,16 @@ class UIPollingCollector(
                     val text = node.text?.toString() ?: ""
                     if (text.isNotBlank() &&
                         text != groupName &&
-                        !text.contains(groupName) &&
-                        text !in inputHints &&
-                        isNodeInRecyclerView(node)
-                    ) {
-                        if (!text.contains("微信")) {
-                            MessageLog.add("[POLL] 过滤非外部客户(FB): ${text.take(30)}")
-                            continue
-                        }
-                        result.add(
+                       !text.contains(groupName) &&
+                       text !in inputHints &&
+                       isNodeInRecyclerView(node)
+                   ) {
+                       if (!text.contains("微信")) {
+                           MessageLog.add("[POLL] 过滤非外部客户(FB): ${text.take(30)}")
+                            MessageLog.add("[MSG] trace=${groupName}-UI采集-${text.take(20)} status=过滤_非外部客户 reason=兜底昵称不含微信")
+                           continue
+                       }
+                       result.add(
                             MessagePusher.WeWorkMessage(
                                 groupName = groupName,
                                 sender = "UI采集",
@@ -827,16 +850,21 @@ class UIPollingCollector(
         chatList?.recycle()
         chatListNodes.forEach { if (it !== chatList) it.recycle() }
 
-        if (!hasAnyTime && lastPendingMsg != null) {
+       if (!hasAnyTime && lastPendingMsg != null) {
             MessageLog.add("[POLL] 全部无时间气泡，只取最后一条: ${lastPendingMsg.sender} -> ${lastPendingMsg.content.take(40)}")
+            MessageLog.add("[MSG] trace=${messageTraceKey(lastPendingMsg)} status=已提取 reason=全部无时间气泡兜底")
             result.add(lastPendingMsg)
         }
         if (hasAnyTime && result.isEmpty() && lastValidMsg != null) {
             MessageLog.add("[POLL] 时间超时兜底，由于群摘要变化推送最后一条: ${lastValidMsg.sender} -> ${lastValidMsg.content.take(40)}")
+            MessageLog.add("[MSG] trace=${messageTraceKey(lastValidMsg)} status=已提取 reason=摘要变化超时兜底")
             result.add(lastValidMsg)
         }
         if (result.isNotEmpty()) {
             MessageLog.add("[POLL] 提取到 ${result.size} 条消息: ${result.joinToString { "${it.sender}->${it.content.take(20)}" }}")
+            result.forEach {
+                MessageLog.add("[MSG] trace=${messageTraceKey(it)} status=已提取 reason=UI采集")
+            }
         }
         return result
     }
