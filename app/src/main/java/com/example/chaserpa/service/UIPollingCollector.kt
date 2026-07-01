@@ -713,6 +713,7 @@ class UIPollingCollector(
         var hasAnyTime = false
         var lastPendingMsg: MessagePusher.WeWorkMessage? = null
         var lastValidMsg: MessagePusher.WeWorkMessage? = null
+        var lastValidMsgTime: Long? = null
 
         val chatListNodes = root.findAccessibilityNodeInfosByViewId(ID_CHAT_LISTVIEW)
         val chatList = chatListNodes.firstOrNull()
@@ -736,6 +737,9 @@ class UIPollingCollector(
                             MessageLog.add("[MSG] trace=${messageTraceKey(old)} status=丢弃 reason=发现时间气泡丢弃暂存")
                         }
                         lastKnownTime = it
+                        if (lastValidMsgTime == null) {
+                            lastValidMsgTime = it
+                        }
                         hasAnyTime = true
                         lastPendingMsg = null
                     }
@@ -787,6 +791,7 @@ class UIPollingCollector(
                         timestamp = System.currentTimeMillis()
                     )
                     lastValidMsg = msg
+                    lastValidMsgTime = lastKnownTime
 
                     if (!hasAnyTime) {
                         lastPendingMsg?.let { old ->
@@ -856,9 +861,14 @@ class UIPollingCollector(
             result.add(lastPendingMsg)
         }
         if (hasAnyTime && result.isEmpty() && lastValidMsg != null) {
-            MessageLog.add("[POLL] 时间超时兜底，由于群摘要变化推送最后一条: ${lastValidMsg.sender} -> ${lastValidMsg.content.take(40)}")
-            MessageLog.add("[MSG] trace=${messageTraceKey(lastValidMsg)} status=已提取 reason=摘要变化超时兜底")
-            result.add(lastValidMsg)
+            if (isMessageTooOld(lastValidMsgTime)) {
+                MessageLog.add("[POLL] 兜底消息时间过期，不推送: ${lastValidMsg.sender} -> ${lastValidMsg.content.take(40)}")
+                MessageLog.add("[MSG] trace=${messageTraceKey(lastValidMsg)} status=丢弃 reason=兜底消息时间过期")
+            } else {
+                MessageLog.add("[POLL] 时间超时兜底，由于群摘要变化推送最后一条: ${lastValidMsg.sender} -> ${lastValidMsg.content.take(40)}")
+                MessageLog.add("[MSG] trace=${messageTraceKey(lastValidMsg)} status=已提取 reason=摘要变化超时兜底")
+                result.add(lastValidMsg)
+            }
         }
         if (result.isNotEmpty()) {
             MessageLog.add("[POLL] 提取到 ${result.size} 条消息: ${result.joinToString { "${it.sender}->${it.content.take(20)}" }}")
