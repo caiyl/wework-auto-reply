@@ -182,7 +182,7 @@ class WeWorkAccessibilityService : AccessibilityService() {
                 } else {
                     Log.d(TAG, "Duplicate message ignored: ${message.content}")
                     MessageLog.add("[SYS] 重复消息已忽略")
-                    MessageLog.add("[MSG] trace=${messageTraceKey(message)} status=过滤_重复 reason=3分钟内重复")
+                    MessageLog.add("[MSG] trace=${messageTraceKey(message)} status=过滤_重复 reason=缓存窗口内重复")
                 }
             }
         }
