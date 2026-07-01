@@ -36,8 +36,8 @@ class ReplyWorker(
         private const val DEFAULT_INTERVAL_MS = 5000L
         // 两次回复之间的冷却时间，防止界面动画冲突
         private const val REPLY_COOLDOWN_MS = 6000L
-        // 消息最大存活时间：10 分钟，过期丢弃
-        private const val MSG_MAX_AGE_MS = 600_000L
+        // 消息最大存活时间：3 分钟，过期丢弃
+        private const val MSG_MAX_AGE_MS = 180_000L
     }
 
     // Handler 用于主线程调度轮询
