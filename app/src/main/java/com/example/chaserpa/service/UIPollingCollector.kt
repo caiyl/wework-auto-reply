@@ -856,18 +856,30 @@ class UIPollingCollector(
         chatListNodes.forEach { if (it !== chatList) it.recycle() }
 
        if (!hasAnyTime && lastPendingMsg != null) {
-            MessageLog.add("[POLL] 全部无时间气泡，只取最后一条: ${lastPendingMsg.sender} -> ${lastPendingMsg.content.take(40)}")
-            MessageLog.add("[MSG] trace=${messageTraceKey(lastPendingMsg)} status=已提取 reason=全部无时间气泡兜底")
-            result.add(lastPendingMsg)
+            val alreadyReplied = isAlreadyReplied(root, lastPendingMsg)
+            if (alreadyReplied) {
+                MessageLog.add("[POLL] 兜底消息已被企业微信用户回复，跳过: ${lastPendingMsg.sender} -> ${lastPendingMsg.content.take(40)}")
+                MessageLog.add("[MSG] trace=${messageTraceKey(lastPendingMsg)} status=过滤_已回复 reason=企业微信用户已回复含相同号码")
+            } else {
+                MessageLog.add("[POLL] 全部无时间气泡，只取最后一条: ${lastPendingMsg.sender} -> ${lastPendingMsg.content.take(40)}")
+                MessageLog.add("[MSG] trace=${messageTraceKey(lastPendingMsg)} status=已提取 reason=全部无时间气泡兜底")
+                result.add(lastPendingMsg)
+            }
         }
         if (hasAnyTime && result.isEmpty() && lastValidMsg != null) {
             if (isMessageTooOld(lastValidMsgTime)) {
                 MessageLog.add("[POLL] 兜底消息时间过期，不推送: ${lastValidMsg.sender} -> ${lastValidMsg.content.take(40)}")
                 MessageLog.add("[MSG] trace=${messageTraceKey(lastValidMsg)} status=丢弃 reason=兜底消息时间过期")
             } else {
-                MessageLog.add("[POLL] 时间超时兜底，由于群摘要变化推送最后一条: ${lastValidMsg.sender} -> ${lastValidMsg.content.take(40)}")
-                MessageLog.add("[MSG] trace=${messageTraceKey(lastValidMsg)} status=已提取 reason=摘要变化超时兜底")
-                result.add(lastValidMsg)
+                val alreadyReplied = isAlreadyReplied(root, lastValidMsg)
+                if (alreadyReplied) {
+                    MessageLog.add("[POLL] 时间超时兜底消息已被回复，跳过: ${lastValidMsg.sender} -> ${lastValidMsg.content.take(40)}")
+                    MessageLog.add("[MSG] trace=${messageTraceKey(lastValidMsg)} status=过滤_已回复 reason=企业微信用户已回复含相同号码")
+                } else {
+                    MessageLog.add("[POLL] 时间超时兜底，由于群摘要变化推送最后一条: ${lastValidMsg.sender} -> ${lastValidMsg.content.take(40)}")
+                    MessageLog.add("[MSG] trace=${messageTraceKey(lastValidMsg)} status=已提取 reason=摘要变化超时兜底")
+                    result.add(lastValidMsg)
+                }
             }
         }
         if (result.isNotEmpty()) {
@@ -877,6 +889,123 @@ class UIPollingCollector(
             }
         }
         return result
+    }
+
+    /**
+     * 判断兜底消息是否已被企业微信用户回复过。
+     *
+     * 遍历聊天页中目标消息之后的气泡，如果发现有企业微信用户（内部员工或自己）
+     * 发送的回复包含了目标消息中的号码，则认为该消息已经处理过，不需要再次兜底推送。
+     *
+     * @param root 群聊详情页根节点
+     * @param targetMsg 待判断的兜底消息
+     * @param numberRegex 用于从消息内容中提取号码的正则，默认匹配 12-21 位字母或数字组合
+     * @return true 表示已回复，不应再兜底推送
+     */
+    private fun isAlreadyReplied(
+        root: AccessibilityNodeInfo,
+        targetMsg: MessagePusher.WeWorkMessage,
+        numberRegex: Regex = Regex("""[a-zA-Z0-9]{12,21}""")
+    ): Boolean {
+        val targetNumbers = numberRegex.findAll(targetMsg.content).map { it.value }.toSet()
+        MessageLog.add("[POLL] isAlreadyReplied: 开始判断 targetSender=${targetMsg.sender} targetContent=${targetMsg.content.take(40)} targetNumbers=${targetNumbers}")
+        if (targetNumbers.isEmpty()) {
+            MessageLog.add("[POLL] isAlreadyReplied: 兜底消息无号码，无法判断，视为未回复")
+            return false
+        }
+
+        val chatListNodes = root.findAccessibilityNodeInfosByViewId(ID_CHAT_LISTVIEW)
+        val chatList = chatListNodes.firstOrNull() ?: run {
+            MessageLog.add("[POLL] isAlreadyReplied: 未找到聊天列表 ListView，放弃判断")
+            chatListNodes.forEach { it.recycle() }
+            return false
+        }
+        MessageLog.add("[POLL] isAlreadyReplied: 聊天列表气泡数=${chatList.childCount}")
+
+        val nodesToRecycle = mutableListOf<AccessibilityNodeInfo>()
+        var foundTarget = false
+        var replied = false
+
+        try {
+            for (i in 0 until chatList.childCount) {
+                val bubble = chatList.getChild(i) ?: continue
+                nodesToRecycle.add(bubble)
+
+                // 遍历整个气泡，收集所有 TextView 文本（兼容普通文本和卡片消息）
+                val allTextParts = mutableListOf<String>()
+                val nicknameParts = mutableListOf<String>()
+                val bfsDeque = java.util.ArrayDeque<AccessibilityNodeInfo>()
+                bfsDeque.add(bubble)
+                while (bfsDeque.isNotEmpty()) {
+                    val node = bfsDeque.poll() ?: continue
+                    val cls = node.className?.toString() ?: ""
+                    if (cls.contains("TextView")) {
+                        val text = node.text?.toString() ?: ""
+                        val id = node.viewIdResourceName?.toString() ?: ""
+                        if (text.isNotBlank()) {
+                            allTextParts.add(text)
+                            if (id.isEmpty()) {
+                                nicknameParts.add(text)
+                            }
+                        }
+                    }
+                    for (k in 0 until node.childCount) {
+                        val child = node.getChild(k)
+                        if (child != null) {
+                            nodesToRecycle.add(child)
+                            bfsDeque.add(child)
+                        }
+                    }
+                }
+
+                val content = allTextParts.joinToString(" ")
+                if (content.isBlank()) {
+                    MessageLog.add("[POLL] isAlreadyReplied: 气泡[$i] content 为空，跳过")
+                    continue
+                }
+
+                val sender = nicknameParts.joinToString("").replace("＠", "@")
+                val normalizedTargetSender = targetMsg.sender.replace("＠", "@")
+                val isExternal = nicknameParts.any { it.contains("微信") }
+                MessageLog.add("[POLL] isAlreadyReplied: 气泡[$i] sender=${sender} isExternal=${isExternal} content=${content.take(40)}")
+
+                if (!foundTarget) {
+                    // 通过发送者和号码定位目标消息，避免内容格式（换行/空格）不一致导致匹配失败
+                    val senderMatch = sender == normalizedTargetSender
+                    val containsTargetNumber = targetNumbers.any { content.contains(it) }
+                    MessageLog.add("[POLL] isAlreadyReplied: 定位检查 senderMatch=${senderMatch} containsTargetNumber=${containsTargetNumber}")
+                    if (isExternal && senderMatch && containsTargetNumber) {
+                        foundTarget = true
+                        MessageLog.add("[POLL] isAlreadyReplied: 目标消息定位成功，气泡[$i]")
+                    }
+                    continue
+                }
+
+                // 目标消息之后，跳过外部客户自己的消息
+                if (isExternal) {
+                    MessageLog.add("[POLL] isAlreadyReplied: 气泡[$i] 是外部客户消息，跳过")
+                    continue
+                }
+
+                // 企业微信用户（内部员工或自己）的回复中是否包含目标号码
+                val matchedNumbers = targetNumbers.filter { content.contains(it) }
+                MessageLog.add("[POLL] isAlreadyReplied: 气泡[$i] 是企业微信用户消息 matchedNumbers=${matchedNumbers}")
+                if (matchedNumbers.isNotEmpty()) {
+                    MessageLog.add("[POLL] isAlreadyReplied: 发现企业微信用户回复包含号码，判定已回复")
+                    replied = true
+                    break
+                }
+            }
+        } catch (e: Exception) {
+            MessageLog.add("[POLL] isAlreadyReplied exception: ${e.javaClass.simpleName}: ${e.message}")
+        } finally {
+            nodesToRecycle.forEach { it.recycle() }
+            chatList.recycle()
+            chatListNodes.forEach { if (it !== chatList) it.recycle() }
+        }
+
+        MessageLog.add("[POLL] isAlreadyReplied: 最终判定 replied=${replied}")
+        return replied
     }
 
     /**
