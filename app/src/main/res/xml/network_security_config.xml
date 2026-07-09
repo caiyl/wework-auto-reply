@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<network-security-config>
+    <!-- 仅针对特定 IP 开放明文，其他请求仍强制 HTTPS -->
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="true">10.120.70.247</domain>
+    </domain-config>
+</network-security-config>
