@@ -23,11 +23,12 @@ class MessageDeduplicatorTest {
     }
 
     @Test
-    fun sameMessageInDifferentMinute_isNotDuplicate() {
-        val minute1 = 1000L * 60 * 1000 // 1000 minutes in ms
-        val minute2 = 1001L * 60 * 1000 // 1001 minutes in ms
-        assertFalse(deduplicator.isDuplicate("group1", "sender1", "hello", minute1))
-        assertFalse(deduplicator.isDuplicate("group1", "sender1", "hello", minute2))
+    fun sameMessageOutsideWindow_isNotDuplicate() {
+        val windowMs = 11L * 60 * 1000
+        val t1 = 1000L * 60 * 60 * 1000 // 1000 hours in ms
+        val t2 = t1 + windowMs + 1
+        assertFalse(deduplicator.isDuplicate("group1", "sender1", "hello", t1))
+        assertFalse(deduplicator.isDuplicate("group1", "sender1", "hello", t2))
     }
 
     @Test
@@ -47,8 +48,9 @@ class MessageDeduplicatorTest {
     @Test
     fun expiredMessage_isNotDuplicate() {
         val now = System.currentTimeMillis()
+        val windowMs = 11L * 60 * 1000
         assertFalse(deduplicator.isDuplicate("group1", "sender1", "hello", now))
-        assertFalse(deduplicator.isDuplicate("group1", "sender1", "hello", now + 61000))
+        assertFalse(deduplicator.isDuplicate("group1", "sender1", "hello", now + windowMs + 1))
     }
 
     @Test
