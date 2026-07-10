@@ -897,6 +897,10 @@ class UIPollingCollector(
      * 遍历聊天页中目标消息之后的气泡，如果发现有企业微信用户（内部员工或自己）
      * 发送的回复包含了目标消息中的号码，则认为该消息已经处理过，不需要再次兜底推送。
      *
+     * 注意：同一外部客户可能在聊天页里多次发送消息。兜底消息是方法传进来的那一条，
+     * 因此定位目标消息时必须按“发送者 + 消息内容”精确匹配（优先匹配带聊天内容 ID 的节点），
+     * 取最后一个匹配的气泡作为目标，避免凭号码把更早的同名/同号消息误判为兜底消息。
+     *
      * @param root 群聊详情页根节点
      * @param targetMsg 待判断的兜底消息
      * @param numberRegex 用于从消息内容中提取号码的正则，默认匹配 12-21 位字母或数字组合
@@ -922,9 +926,20 @@ class UIPollingCollector(
         }
         MessageLog.add("[POLL] isAlreadyReplied: 聊天列表气泡数=${chatList.childCount}")
 
+        data class BubbleSnapshot(
+            val isExternal: Boolean,
+            val sender: String,
+            val content: String
+        )
+
+        // 把连续空白字符（换行、制表符、多个空格）统一成单个空格，便于跨节点比较
+        fun normalizeWs(text: String): String = text.replace(Regex("""\s+"""), " ").trim()
+        val normalizedTargetContent = normalizeWs(targetMsg.content)
+
         val nodesToRecycle = mutableListOf<AccessibilityNodeInfo>()
-        var foundTarget = false
-        var replied = false
+        val bubbles = mutableListOf<BubbleSnapshot>()
+        var lastTargetIndex = -1
+        val normalizedTargetSender = targetMsg.sender.replace("＠", "@")
 
         try {
             for (i in 0 until chatList.childCount) {
@@ -933,6 +948,7 @@ class UIPollingCollector(
 
                 // 遍历整个气泡，收集所有 TextView 文本（兼容普通文本和卡片消息）
                 val allTextParts = mutableListOf<String>()
+                val chatContentParts = mutableListOf<String>()
                 val nicknameParts = mutableListOf<String>()
                 val bfsDeque = java.util.ArrayDeque<AccessibilityNodeInfo>()
                 bfsDeque.add(bubble)
@@ -944,6 +960,9 @@ class UIPollingCollector(
                         val id = node.viewIdResourceName?.toString() ?: ""
                         if (text.isNotBlank()) {
                             allTextParts.add(text)
+                            if (id == ID_CHAT_CONTENT) {
+                                chatContentParts.add(text)
+                            }
                             if (id.isEmpty()) {
                                 nicknameParts.add(text)
                             }
@@ -965,35 +984,40 @@ class UIPollingCollector(
                 }
 
                 val sender = nicknameParts.joinToString("").replace("＠", "@")
-                val normalizedTargetSender = targetMsg.sender.replace("＠", "@")
                 val isExternal = nicknameParts.any { it.contains("微信") }
+                bubbles.add(BubbleSnapshot(isExternal, sender, content))
                 MessageLog.add("[POLL] isAlreadyReplied: 气泡[$i] sender=${sender} isExternal=${isExternal} content=${content.take(40)}")
 
-                if (!foundTarget) {
-                    // 通过发送者和号码定位目标消息，避免内容格式（换行/空格）不一致导致匹配失败
-                    val senderMatch = sender == normalizedTargetSender
-                    val containsTargetNumber = targetNumbers.any { content.contains(it) }
-                    MessageLog.add("[POLL] isAlreadyReplied: 定位检查 senderMatch=${senderMatch} containsTargetNumber=${containsTargetNumber}")
-                    if (isExternal && senderMatch && containsTargetNumber) {
-                        foundTarget = true
-                        MessageLog.add("[POLL] isAlreadyReplied: 目标消息定位成功，气泡[$i]")
+                // 通过发送者和消息内容精确定位目标消息候选；取最后一个匹配的，因为兜底消息是当前最新的那条
+                if (isExternal && sender == normalizedTargetSender) {
+                    val contentMatched = chatContentParts.any { normalizeWs(it) == normalizedTargetContent }
+                        || allTextParts.any { normalizeWs(it) == normalizedTargetContent }
+                        || normalizeWs(content).contains(normalizedTargetContent)
+                    if (contentMatched) {
+                        lastTargetIndex = bubbles.lastIndex
+                        MessageLog.add("[POLL] isAlreadyReplied: 目标消息定位成功，气泡[$i] 索引=${bubbles.lastIndex}")
                     }
-                    continue
                 }
+            }
 
-                // 目标消息之后，跳过外部客户自己的消息
-                if (isExternal) {
+            if (lastTargetIndex == -1) {
+                MessageLog.add("[POLL] isAlreadyReplied: 未定位到目标消息，视为未回复")
+                return false
+            }
+            MessageLog.add("[POLL] isAlreadyReplied: 最终目标气泡索引=$lastTargetIndex，从该索引之后检查回复")
+
+            for (i in (lastTargetIndex + 1) until bubbles.size) {
+                val snapshot = bubbles[i]
+                if (snapshot.isExternal) {
                     MessageLog.add("[POLL] isAlreadyReplied: 气泡[$i] 是外部客户消息，跳过")
                     continue
                 }
 
-                // 企业微信用户（内部员工或自己）的回复中是否包含目标号码
-                val matchedNumbers = targetNumbers.filter { content.contains(it) }
+                val matchedNumbers = targetNumbers.filter { snapshot.content.contains(it) }
                 MessageLog.add("[POLL] isAlreadyReplied: 气泡[$i] 是企业微信用户消息 matchedNumbers=${matchedNumbers}")
                 if (matchedNumbers.isNotEmpty()) {
                     MessageLog.add("[POLL] isAlreadyReplied: 发现企业微信用户回复包含号码，判定已回复")
-                    replied = true
-                    break
+                    return true
                 }
             }
         } catch (e: Exception) {
@@ -1004,8 +1028,8 @@ class UIPollingCollector(
             chatListNodes.forEach { if (it !== chatList) it.recycle() }
         }
 
-        MessageLog.add("[POLL] isAlreadyReplied: 最终判定 replied=${replied}")
-        return replied
+        MessageLog.add("[POLL] isAlreadyReplied: 目标消息之后无企业微信用户回复包含号码，视为未回复")
+        return false
     }
 
     /**
